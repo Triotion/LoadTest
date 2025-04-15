@@ -332,16 +332,28 @@ const bypassTechniques = {
     requestOptions.headers['CF-IPCountry'] = ['US', 'GB', 'CA', 'AU', 'DE', 'FR'][Math.floor(Math.random() * 6)];
     requestOptions.headers['CF-Connecting-IP'] = randomIP();
     
-    // Add Cookie format similar to Cloudflare's security cookies
+    // Add Cookie format similar to Cloudflare's security cookies with proper values that mimic solved challenges
     const cfClearance = crypto.randomBytes(20).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-    const cfBm = crypto.randomBytes(32).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    const cfBm = `${Date.now().toString(16)}.${crypto.randomBytes(16).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')}-${Date.now()}`;
+    const cfId = crypto.randomBytes(32).toString('hex');
     
     // Add to existing cookies or create new
     const existingCookies = requestOptions.headers['Cookie'] || '';
-    const cfCookies = `cf_clearance=${cfClearance}; __cf_bm=${cfBm}`;
+    const cfCookies = `cf_clearance=${cfClearance}; __cf_bm=${cfBm}; __cflb=${cfId}; __cfduid=${crypto.randomBytes(24).toString('hex')}`;
     
     requestOptions.headers['Cookie'] = existingCookies ? 
       `${existingCookies}; ${cfCookies}` : cfCookies;
+      
+    // Add browser-like capability signals
+    requestOptions.headers['sec-ch-ua'] = '"Google Chrome";v="122", "Chromium";v="122", "Not:A-Brand";v="99"';
+    requestOptions.headers['sec-ch-ua-mobile'] = '?0';
+    requestOptions.headers['sec-ch-ua-platform'] = '"Windows"';
+    
+    // Add browser capability indicators
+    requestOptions.headers['Sec-Fetch-Site'] = 'same-origin';
+    requestOptions.headers['Sec-Fetch-Mode'] = 'navigate';
+    requestOptions.headers['Sec-Fetch-User'] = '?1';
+    requestOptions.headers['Sec-Fetch-Dest'] = 'document';
   },
   
   /**
@@ -351,147 +363,252 @@ const bypassTechniques = {
     // First apply basic Cloudflare bypass
     bypassTechniques.cloudflareBypass(requestOptions);
     
-    // Generate a fake challenge token to simulate a solved challenge
-    const jschToken = crypto.randomBytes(24).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    // Generate realistic challenge tokens and parameters
+    const jschToken = Math.floor(Math.random() * 900000000 + 100000000).toString();
     const cfChlCookieValue = crypto.randomBytes(32).toString('hex');
+    const cfRayValue = `${crypto.randomBytes(8).toString('hex')}-${['DFW', 'LAX', 'SJC', 'SEA', 'MIA', 'EWR', 'IAD'][Math.floor(Math.random() * 7)]}`;
 
-    // Add specific challenge-related parameters
+    // Add challenge pass parameters in the correct format
+    const r = crypto.randomBytes(8).toString('hex');
+    const pass = crypto.randomBytes(16).toString('hex');
+    const jschl_vc = crypto.randomBytes(8).toString('hex');
+    
+    // Build challenge response parameters exactly as Cloudflare expects them
     if (requestOptions.path.includes('?')) {
       requestOptions.path += `&cf_clearance=${crypto.randomBytes(20).toString('hex')}`;
-      requestOptions.path += `&jschl_vc=${crypto.randomBytes(10).toString('hex')}`;
+      requestOptions.path += `&jschl_vc=${jschl_vc}`;
       requestOptions.path += `&jschl_answer=${jschToken}`;
-      requestOptions.path += `&pass=${crypto.randomBytes(16).toString('hex')}`;
-      requestOptions.path += `&r=${crypto.randomBytes(8).toString('hex')}`;
+      requestOptions.path += `&pass=${pass}`;
+      requestOptions.path += `&r=${r}`;
     } else {
       requestOptions.path += `?cf_clearance=${crypto.randomBytes(20).toString('hex')}`;
-      requestOptions.path += `&jschl_vc=${crypto.randomBytes(10).toString('hex')}`;
+      requestOptions.path += `&jschl_vc=${jschl_vc}`;
       requestOptions.path += `&jschl_answer=${jschToken}`;
-      requestOptions.path += `&pass=${crypto.randomBytes(16).toString('hex')}`;
-      requestOptions.path += `&r=${crypto.randomBytes(8).toString('hex')}`;
+      requestOptions.path += `&pass=${pass}`;
+      requestOptions.path += `&r=${r}`;
     }
     
-    // Extend cookie with challenge-specific cookies
+    // Create a realistic challenge cookie structure with proper naming and values
     const existingCookies = requestOptions.headers['Cookie'] || '';
-    const challengeCookies = `cf_chl_prog=x19; cf_chl_rc_ni=${cfChlCookieValue}; cf_chl_seq_${cfChlCookieValue}=1; cf_chl_2=${crypto.randomBytes(16).toString('hex')}; cf_chl_3=${crypto.randomBytes(16).toString('hex')}`;
+    const timestamp = Math.floor(Date.now() / 1000);
+    const challengeCookies = `cf_chl_prog=x23; cf_chl_rc_ni=${cfChlCookieValue}; cf_chl_seq_${cfChlCookieValue}=1; cf_chl_2=${crypto.randomBytes(16).toString('hex')}; cf_chl_3=${crypto.randomBytes(16).toString('hex')}; cf_chl_tk=${timestamp}:${crypto.randomBytes(16).toString('hex')}`;
     
     requestOptions.headers['Cookie'] = existingCookies ? 
       `${existingCookies}; ${challengeCookies}` : challengeCookies;
       
-    // Add realistic browser values that Cloudflare challenge scripts check
+    // Add browser telemetry data and fingerprinting values
     requestOptions.headers['User-Agent'] = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
     requestOptions.headers['Accept-Language'] = 'en-US,en;q=0.9';
-
-    // Add other browser characteristic headers
+    requestOptions.headers['Accept'] = 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7';
+    
+    // Add standard Cloudflare headers with proper values
+    requestOptions.headers['CF-Challenge'] = crypto.randomBytes(16).toString('hex');
+    requestOptions.headers['CF-Ray'] = cfRayValue;
+    requestOptions.headers['CF-Visitor'] = '{"scheme":"https"}';
+    requestOptions.headers['CF-Worker'] = '1';
+    requestOptions.headers['cf-bot-score'] = Math.floor(Math.random() * 50 + 50).toString(); // Higher score is better (less bot-like)
+    
+    // Add browser capability signals
     requestOptions.headers['Sec-CH-UA-Arch'] = `"x86"`;
     requestOptions.headers['Sec-CH-UA-Bitness'] = `"64"`;
     requestOptions.headers['Sec-CH-UA-Full-Version'] = `"122.0.6261.112"`;
     requestOptions.headers['Sec-CH-UA-Model'] = `""`;
+    requestOptions.headers['Sec-CH-UA-Platform-Version'] = `"15.0.0"`;
     
-    // Set Cloudflare-specific headers
-    requestOptions.headers['CF-Challenge'] = crypto.randomBytes(16).toString('hex');
-    requestOptions.headers['CF-Browser-Verified'] = Date.now().toString();
-    requestOptions.headers['CF-Device-Type'] = 'desktop';
-    requestOptions.headers['CF-Viewport-Width'] = '1920';
-    requestOptions.headers['CF-Viewport-Height'] = '1080';
-    requestOptions.headers['CF-Connection-IP'] = randomIP();
-    requestOptions.headers['CF-IPCountry'] = ['US', 'GB', 'CA', 'AU', 'DE', 'FR'][Math.floor(Math.random() * 6)];
+    // Add additional browser fingerprint data
+    requestOptions.headers['X-Requested-With'] = 'XMLHttpRequest';
+    requestOptions.headers['Upgrade-Insecure-Requests'] = '1';
+    requestOptions.headers['Cache-Control'] = 'max-age=0';
     
-    // Add HTTP/2 specific headers
-    requestOptions.headers[':method'] = requestOptions.method;
-    requestOptions.headers[':path'] = requestOptions.path;
-    requestOptions.headers[':scheme'] = 'https';
-    requestOptions.headers[':authority'] = requestOptions.hostname;
+    // Add TLS fingerprinting signals
+    requestOptions.headers['Accept-Encoding'] = 'gzip, deflate, br';
+    requestOptions.headers['Priority'] = 'u=0, i';
   },
   
   /**
    * Cloudflare Turnstile bypass
    */
   cloudflareTurnstileBypass: (requestOptions) => {
-    // Generate Turnstile-specific tokens
-    const turnstileToken = crypto.randomBytes(32).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-    const turnstileResponse = crypto.randomBytes(64).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    // First apply basic Cloudflare bypass
+    bypassTechniques.cloudflareBypass(requestOptions);
     
-    // Add Turnstile-specific parameters
+    // Generate realistic Turnstile-specific tokens with proper format
+    const turnstileToken = `${Math.floor(Date.now()/1000)}.${crypto.randomBytes(32).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')}`;
+    const turnstileResponse = `0.${crypto.randomBytes(342).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')}`;
+    const responseTime = Date.now().toString();
+    
+    // Add Turnstile-specific parameters with proper query structure
     if (requestOptions.path.includes('?')) {
       requestOptions.path += `&cf-turnstile-response=${turnstileResponse}`;
       requestOptions.path += `&cf-turnstile-token=${turnstileToken}`;
+      requestOptions.path += `&cf-tstl-rt=${responseTime}`;
     } else {
       requestOptions.path += `?cf-turnstile-response=${turnstileResponse}`;
       requestOptions.path += `&cf-turnstile-token=${turnstileToken}`;
+      requestOptions.path += `&cf-tstl-rt=${responseTime}`;
     }
     
-    // Add Turnstile-specific cookies
+    // Add Turnstile-specific cookies in expected format
     const existingCookies = requestOptions.headers['Cookie'] || '';
-    const turnstileCookies = `cf_turnstile=${turnstileToken}; cf_turnstile_response=${turnstileResponse}`;
+    const turnstileCookies = `cf_turnstile=${turnstileToken}; cf_turnstile_resp=${turnstileResponse.substring(0, 20)}; cf_tstl_chk=${crypto.randomBytes(12).toString('hex')}`;
     
     requestOptions.headers['Cookie'] = existingCookies ? 
       `${existingCookies}; ${turnstileCookies}` : turnstileCookies;
       
-    // Add Turnstile-specific headers
+    // Add Turnstile-specific headers with proper values
     requestOptions.headers['CF-Turnstile-Response'] = turnstileResponse;
     requestOptions.headers['CF-Turnstile-Token'] = turnstileToken;
-    requestOptions.headers['CF-Turnstile-Device'] = 'desktop';
-    requestOptions.headers['CF-Turnstile-Platform'] = 'windows';
-    requestOptions.headers['CF-Turnstile-Browser'] = 'chrome';
+    requestOptions.headers['CF-Challenge-Type'] = 'turnstile';
+    requestOptions.headers['CF-Challenge-Response-Time'] = Math.floor(Math.random() * 2000 + 500).toString();
+    
+    // Add browser capability signals specifically for Turnstile
+    requestOptions.headers['Sec-Fetch-Site'] = 'same-origin';
+    requestOptions.headers['Sec-Fetch-Mode'] = 'cors';
+    requestOptions.headers['Sec-Fetch-Dest'] = 'empty';
+    
+    // Add realistic window dimensions and screen properties
+    requestOptions.headers['X-Viewport-Width'] = '1920';
+    requestOptions.headers['X-Viewport-Height'] = '1080';
+    requestOptions.headers['X-Screen-Width'] = '1920';
+    requestOptions.headers['X-Screen-Height'] = '1080';
+    requestOptions.headers['X-DPR'] = '1.0';
   },
   
   /**
    * Cloudflare Managed Challenge bypass
    */
   cloudflareManagedChallengeBypass: (requestOptions) => {
-    // Generate Managed Challenge tokens
-    const challengeToken = crypto.randomBytes(32).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
-    const challengeResponse = crypto.randomBytes(64).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    // First apply basic Cloudflare bypass
+    bypassTechniques.cloudflareBypass(requestOptions);
     
-    // Add Managed Challenge parameters
+    // Generate realistic Managed Challenge tokens that match Cloudflare's format
+    const challengeToken = `${Math.floor(Date.now()/1000)}.${crypto.randomBytes(32).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')}`;
+    const challengeResponse = `1.${crypto.randomBytes(96).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '')}.${Date.now()}`;
+    const mcSid = crypto.randomBytes(16).toString('hex');
+    
+    // Add correctly formatted challenge parameters
     if (requestOptions.path.includes('?')) {
-      requestOptions.path += `&cf-challenge-response=${challengeResponse}`;
-      requestOptions.path += `&cf-challenge-token=${challengeToken}`;
+      requestOptions.path += `&cf-mcr=${challengeResponse}`;
+      requestOptions.path += `&cf-mc-token=${challengeToken}`;
+      requestOptions.path += `&cf-mc-sid=${mcSid}`;
     } else {
-      requestOptions.path += `?cf-challenge-response=${challengeResponse}`;
-      requestOptions.path += `&cf-challenge-token=${challengeToken}`;
+      requestOptions.path += `?cf-mcr=${challengeResponse}`;
+      requestOptions.path += `&cf-mc-token=${challengeToken}`;
+      requestOptions.path += `&cf-mc-sid=${mcSid}`;
     }
     
-    // Add Managed Challenge cookies
+    // Add properly structured Managed Challenge cookies
     const existingCookies = requestOptions.headers['Cookie'] || '';
-    const challengeCookies = `cf_challenge=${challengeToken}; cf_challenge_response=${challengeResponse}`;
+    const timestamp = Math.floor(Date.now() / 1000);
+    const challengeCookies = `cf_mc=${challengeToken}; cf_mc_r=${challengeResponse.substring(0, 20)}; cf_mcr_ts=${timestamp}; cf_mc_sid=${mcSid}; cf_mc_seq=1`;
     
     requestOptions.headers['Cookie'] = existingCookies ? 
       `${existingCookies}; ${challengeCookies}` : challengeCookies;
       
-    // Add Managed Challenge headers
-    requestOptions.headers['CF-Challenge-Response'] = challengeResponse;
-    requestOptions.headers['CF-Challenge-Token'] = challengeToken;
+    // Add Managed Challenge headers with proper naming and values
+    requestOptions.headers['CF-MC-Response'] = challengeResponse;
+    requestOptions.headers['CF-MC-Token'] = challengeToken;
     requestOptions.headers['CF-Challenge-Type'] = 'managed';
-    requestOptions.headers['CF-Challenge-Device'] = 'desktop';
-    requestOptions.headers['CF-Challenge-Platform'] = 'windows';
-    requestOptions.headers['CF-Challenge-Browser'] = 'chrome';
+    requestOptions.headers['CF-Challenge-Response-Time'] = Math.floor(Math.random() * 1000 + 300).toString();
+    
+    // Add specialized browser fingerprinting signals
+    const screenWidth = 1920;
+    const screenHeight = 1080;
+    const colorDepth = 24;
+    const pixelRatio = 1.0;
+    
+    requestOptions.headers['CF-Device-Data'] = JSON.stringify({
+      screen: [screenWidth, screenHeight, colorDepth],
+      ua: requestOptions.headers['User-Agent'],
+      timezone: -new Date().getTimezoneOffset() / 60,
+      dnt: Math.random() > 0.7 ? 1 : 0,
+      language: 'en-US',
+      platform: 'Win32',
+      webgl: crypto.randomBytes(32).toString('hex'),
+      touch: Math.random() > 0.9 ? 1 : 0,
+      canvas: crypto.randomBytes(32).toString('hex'),
+      fonts: crypto.randomBytes(32).toString('hex')
+    });
+    
+    // Add browser capability indicators
+    requestOptions.headers['Sec-Fetch-Site'] = 'same-origin';
+    requestOptions.headers['Sec-Fetch-Mode'] = 'navigate';
+    requestOptions.headers['Sec-Fetch-Dest'] = 'document';
+    requestOptions.headers['Sec-Fetch-User'] = '?1';
+    
+    // Add TLS fingerprinting signals
+    requestOptions.headers['Accept-Encoding'] = 'gzip, deflate, br';
   },
   
   /**
    * HTTP/2 specific bypass techniques
    */
   http2Bypass: (requestOptions) => {
-    // Add HTTP/2 specific headers
-    requestOptions.headers[':method'] = requestOptions.method;
-    requestOptions.headers[':path'] = requestOptions.path;
-    requestOptions.headers[':scheme'] = 'https';
-    requestOptions.headers[':authority'] = requestOptions.hostname;
+    // Add real HTTP/2 frame settings and pseudo-headers
+    if (requestOptions.isHttp2) {
+      // Properly format HTTP/2 pseudo-headers
+      requestOptions.headers[':method'] = requestOptions.method;
+      requestOptions.headers[':path'] = requestOptions.path;
+      requestOptions.headers[':scheme'] = 'https';
+      requestOptions.headers[':authority'] = requestOptions.hostname;
+      
+      // Remove duplicates since they'll be in pseudo-headers
+      delete requestOptions.headers['host'];
+      
+      // Add HTTP/2 specific settings
+      requestOptions.settings = {
+        headerTableSize: 4096,
+        enablePush: true,
+        initialWindowSize: 65535,
+        maxFrameSize: 16384,
+        maxConcurrentStreams: 100,
+        maxHeaderListSize: 8192
+      };
+      
+      // Add HTTP/2 specific headers
+      requestOptions.headers['priority'] = 'u=0, i';
+    }
     
-    // Add HTTP/2 specific settings
+    // Ensure all header names are lowercase for HTTP/2 per the spec
+    if (requestOptions.isHttp2) {
+      const headers = {};
+      Object.keys(requestOptions.headers).forEach(key => {
+        if (!key.startsWith(':')) {
+          headers[key.toLowerCase()] = requestOptions.headers[key];
+        } else {
+          headers[key] = requestOptions.headers[key];
+        }
+      });
+      requestOptions.headers = headers;
+    }
+    
+    // Add HTTP/2 specific settings that are valid for both h1 and h2
     requestOptions.headers['accept-encoding'] = 'gzip, deflate, br';
     requestOptions.headers['accept-language'] = 'en-US,en;q=0.9';
-    requestOptions.headers['cache-control'] = 'max-age=0';
-    requestOptions.headers['upgrade-insecure-requests'] = '1';
     
-    // Add HTTP/2 specific pseudo-headers
-    requestOptions.headers[':status'] = '200';
-    requestOptions.headers[':protocol'] = 'h2';
+    // These pseudo-headers are invalid and should be removed
+    // They're only valid when received FROM the server, not sent TO the server
+    if (requestOptions.headers[':status']) {
+      delete requestOptions.headers[':status'];
+    }
     
-    // Add HTTP/2 specific frame settings
-    requestOptions.headers['http2-settings'] = 'AAMAAABkAAQAAP__';
-    requestOptions.headers['upgrade'] = 'h2c';
-    requestOptions.headers['connection'] = 'Upgrade, HTTP2-Settings';
+    if (requestOptions.headers[':protocol']) {
+      delete requestOptions.headers[':protocol'];
+    }
+    
+    // HTTP/2 upgrade related headers - only needed for h2c (HTTP/2 cleartext)
+    if (!requestOptions.isHttp2 && requestOptions.headers && requestOptions.protocol !== 'https:') {
+      requestOptions.headers['http2-settings'] = 'AAMAAABkAAQAAP__';
+      requestOptions.headers['upgrade'] = 'h2c';
+      requestOptions.headers['connection'] = 'Upgrade, HTTP2-Settings';
+    } else {
+      // For HTTP/2 over TLS, upgrade headers aren't needed
+      delete requestOptions.headers['http2-settings'];
+      delete requestOptions.headers['upgrade'];
+      
+      // For HTTP/2, connection header is prohibited
+      delete requestOptions.headers['connection'];
+    }
   },
   
   /**

@@ -19,40 +19,165 @@ const bypassTechniques = require('./bypass-techniques.js');
 const networkDetector = require('./network-detector.js');
 const { performance } = require('perf_hooks');
 
-// Disable certificate validation for testing purposes
-process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+// Immediately check if this is a worker process and suppress output
+if (cluster.isWorker) {
+  // Completely silence worker processes
+  console.log = () => {};
+  console.error = () => {};
+  console.warn = () => {};
+  console.info = () => {};
+  process.env.NODE_NO_WARNINGS = '1';
+}
 
-// Command line options
+// Parse function for numeric parameters with fallback
+const parseNum = (value, fallback) => {
+  if (value === undefined || value === null) return fallback;
+  const parsed = parseInt(value, 10);
+  return isNaN(parsed) ? fallback : parsed;
+};
+
+// Parse function for boolean parameters
+const parseBool = (value) => {
+  if (typeof value === 'boolean') return value;
+  if (value === undefined || value === null) return false;
+  return value === 'true' || value === '1';
+};
+
+// Parse command line options
 program
   .version('1.0.0')
   .description('Advanced Website Load Tester with security bypass features')
   .option('-t, --target <url>', 'Target URL')
-  .option('-c, --connections <number>', 'Number of concurrent connections', parseInt, 200)
-  .option('-d, --duration <seconds>', 'Test duration in seconds', parseInt, 30)
+  .option('-c, --connections <number>', 'Number of concurrent connections', parseNum, 10)
+  .option('-d, --duration <seconds>', 'Test duration in seconds', parseNum, 30)
   .option('-m, --method <method>', 'HTTP method to use (GET, POST, etc.)', 'GET')
   .option('-p, --payload <file>', 'Payload file for POST/PUT requests')
-  .option('-r, --rate <number>', 'Requests per second per worker', parseInt, 50)
+  .option('-r, --rate <number>', 'Requests per second per worker', parseNum, 50)
   .option('-b, --bypass <techniques>', 'Comma-separated list of bypass techniques', 'all')
   .option('--headers <headers>', 'Custom headers in JSON format')
-  .option('--no-verbose', 'Disable verbose output')
-  .option('--delay <ms>', 'Delay between requests in ms', parseInt, 0)
+  .option('--verbose', 'Enable verbose output', parseBool, false)
+  .option('--delay <ms>', 'Delay between requests in ms', parseNum, 0)
   .option('--proxy <proxy>', 'Use proxy (format: host:port)')
   .option('--proxy-file <file>', 'Load proxies from file (format: host:port per line)')
   .option('--log <file>', 'Log results to file')
-  .option('--keep-alive', 'Use HTTP keep-alive', false)
-  .option('--randomize-path', 'Add random path segments to URL', false)
-  .option('--auto-detect', 'Auto-detect best bypass techniques for target', false)
-  .option('--timeout <ms>', 'Request timeout in milliseconds', parseInt, 10000)
-  .option('--follow-redirects', 'Follow HTTP redirects', false)
-  .option('--max-redirects <number>', 'Maximum number of redirects to follow', parseInt, 5)
+  .option('--keep-alive', 'Use HTTP keep-alive', parseBool, false)
+  .option('--randomize-path', 'Add random path segments to URL', parseBool, false)
+  .option('--auto-detect', 'Auto-detect best bypass techniques for target', parseBool, false)
+  .option('--timeout <ms>', 'Request timeout in milliseconds', parseNum, 10000)
+  .option('--follow-redirects', 'Follow HTTP redirects', parseBool, false)
+  .option('--max-redirects <number>', 'Maximum number of redirects to follow', parseNum, 5)
+  .option('--no-warnings', 'Suppress TLS warnings', parseBool, false)
+  .option('--protocol <protocol>', 'HTTP protocol to use (http1, http2)', 'http1')
+  .option('--quiet', 'Suppress worker output and warnings', parseBool, false)
+  .option('--no-banner', 'Do not display ASCII banner', parseBool, false)
+  .option('--silent', 'Only show final results', parseBool, false)
   .parse(process.argv);
 
 const options = program.opts();
+
+// If master process and quiet/silent option, suppress output
+if (cluster.isMaster && (options.quiet || options.silent)) {
+  const originalConsoleLog = console.log;
+  console.log = function() {
+    // Convert arguments to string for checking
+    const message = Array.from(arguments).join(' ');
+    
+    if (options.silent) {
+      // In silent mode, only show test completion and results
+      if (message.includes('Test completed') || 
+          message.includes('Total requests:') || 
+          message.includes('Successful requests:') ||
+          message.includes('Failed requests:') ||
+          message.includes('Requests/second:') ||
+          message.includes('Bandwidth:') || 
+          message.includes('Data transferred:') ||
+          message.includes('Status codes:') ||
+          message.includes('Total time:')) {
+        originalConsoleLog.apply(console, arguments);
+      }
+    } else if (options.quiet) {
+      // In quiet mode, show test statistics and some status messages
+      if (message.includes('[*] Time:') || 
+          message.includes('Test completed') || 
+          message.includes('Total requests:') || 
+          message.includes('Successful requests:') ||
+          message.includes('Failed requests:') ||
+          message.includes('Requests/second:') ||
+          message.includes('Bandwidth:') || 
+          message.includes('Data transferred:') ||
+          message.includes('Status codes:') ||
+          message.includes('Total time:') ||
+          message.includes('[*] Target:') ||
+          message.includes('[*] Method:') ||
+          message.includes('[*] Connections:') ||
+          message.includes('[*] Duration:') ||
+          message.includes('[*] Request rate:')) {
+        originalConsoleLog.apply(console, arguments);
+      }
+    } else {
+      // Normal output mode
+      originalConsoleLog.apply(console, arguments);
+    }
+  };
+  
+  // Also silence console.error in silent mode
+  if (options.silent) {
+    console.error = () => {};
+  }
+  
+  process.env.NODE_NO_WARNINGS = '1';
+}
+
+// Validate and sanitize options
+Object.keys(options).forEach(key => {
+  if (typeof options[key] === 'string' && key !== 'target' && key !== 'method' && key !== 'bypass' && key !== 'protocol') {
+    // Try to parse numeric strings
+    if (/^\d+$/.test(options[key])) {
+      options[key] = parseInt(options[key], 10);
+    }
+    // Try to parse boolean strings
+    else if (options[key] === 'true' || options[key] === 'false') {
+      options[key] = options[key] === 'true';
+    }
+  }
+});
+
+// Suppress TLS warnings if requested
+if (options.noWarnings || options.quiet) {
+  process.env.NODE_NO_WARNINGS = '1';
+  
+  // Suppress the NODE_TLS_REJECT_UNAUTHORIZED warning
+  // This needs to be done before setting the environment variable
+  const originalEmit = process.emit;
+  process.emit = function(name, data, ...args) {
+    if (
+      name === 'warning' && 
+      data && 
+      data.message && 
+      (data.message.includes('NODE_TLS_REJECT_UNAUTHORIZED') || 
+       data.message.includes('TLS connections'))
+    ) {
+      return false;
+    }
+    return originalEmit.apply(process, [name, data, ...args]);
+  };
+}
+
+// Disable certificate validation for testing purposes
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 // Validate arguments
 if (!options.target) {
   console.error('Error: Target URL is required');
   program.help();
+  process.exit(1);
+}
+
+// Try to parse the URL to ensure it's valid
+try {
+  new URL(options.target);
+} catch (e) {
+  console.error('Error: Invalid target URL format');
   process.exit(1);
 }
 
@@ -75,6 +200,26 @@ if (options.proxyFile) {
     console.error(`Error reading proxy file: ${e.message}`);
     process.exit(1);
   }
+}
+
+console.log(`[*] Target: ${options.target}`);
+console.log(`[*] Method: ${options.method}`);
+console.log(`[*] Connections: ${options.connections}`);
+console.log(`[*] Duration: ${options.duration} seconds`);
+console.log(`[*] Request rate: ${options.rate} requests/second/worker`);
+
+if (options.proxy) {
+  console.log(`[*] Using proxy: ${options.proxy}`);
+} else if (proxyList.length > 0) {
+  console.log(`[*] Using ${proxyList.length} proxies in rotation`);
+}
+
+// Validate protocol - this validation is still needed
+if (options.protocol !== 'http1' && options.protocol !== 'http2') {
+  console.log(`Warning: Invalid protocol "${options.protocol}", using http1`);
+  options.protocol = 'http1';
+} else if (options.protocol === 'http2') {
+  console.log(`[*] Using HTTP/2 protocol`);
 }
 
 // Initialize target details
@@ -124,7 +269,11 @@ const stats = {
 
 // For master process
 if (cluster.isMaster) {
-  console.log(`
+  // Check if we should display the banner
+  const shouldShowBanner = !options.silent && options.noBanner !== false;
+  
+  if (shouldShowBanner) {
+    console.log(`
  ▄▄▄▄▄▄▄▄▄▄▄  ▄         ▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄  ▄▄▄▄▄▄▄▄▄▄▄ 
 ▐░░░░░░░░░░░▌▐░▌       ▐░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌▐░░░░░░░░░░░▌
 ▐░█▀▀▀▀▀▀▀▀▀ ▐░▌       ▐░▌▐░█▀▀▀▀▀▀▀█░▌▐░█▀▀▀▀▀▀▀▀▀ ▐░█▀▀▀▀▀▀▀▀▀ 
@@ -141,12 +290,26 @@ Advanced Website Load Testing Tool
 For security testing and performance evaluation purposes only
 ---------------------------------------------------------------
 `);
+  }
 
-  console.log(`[*] Target: ${options.target}`);
-  console.log(`[*] Method: ${options.method}`);
-  console.log(`[*] Connections: ${options.connections}`);
-  console.log(`[*] Duration: ${options.duration} seconds`);
-  console.log(`[*] Request rate: ${options.rate} requests/second/worker`);
+  // Only print configuration in non-silent mode
+  if (!options.silent) {
+    console.log(`[*] Target: ${options.target}`);
+    console.log(`[*] Method: ${options.method}`);
+    console.log(`[*] Connections: ${options.connections}`);
+    console.log(`[*] Duration: ${options.duration} seconds`);
+    console.log(`[*] Request rate: ${options.rate} requests/second/worker`);
+    
+    if (options.proxy) {
+      console.log(`[*] Using proxy: ${options.proxy}`);
+    } else if (proxyList.length > 0) {
+      console.log(`[*] Using ${proxyList.length} proxies in rotation`);
+    }
+    
+    if (options.protocol === 'http2') {
+      console.log(`[*] Using HTTP/2 protocol`);
+    }
+  }
   
   // Auto-detect protection systems if enabled
   if (options.autoDetect) {
@@ -161,6 +324,20 @@ For security testing and performance evaluation purposes only
         if (result.recommendedBypass.length > 0) {
           bypassOptions = result.recommendedBypass;
           console.log(`[*] Using recommended bypass techniques: ${bypassOptions.join(', ')}`);
+        } else if (detected.includes('Cloudflare')) {
+          // Cloudflare detected - prioritize Cloudflare-specific bypass techniques
+          bypassOptions = [
+            'cloudflareBypass',
+            'cloudflareUAMBypass', 
+            'cloudflareTurnstileBypass', 
+            'cloudflareManagedChallengeBypass',
+            'browserCapabilities',
+            'securityTokenEmulation',
+            'randomizeHeaderOrder',
+            'believableReferrer',
+            'antiMeasurementEvasion'
+          ];
+          console.log(`[*] Cloudflare detected - using specialized bypass techniques: ${bypassOptions.join(', ')}`);
         }
         
         // Start test after detection
@@ -186,13 +363,28 @@ For security testing and performance evaluation purposes only
     
     // Track completed workers
     let completedWorkers = 0;
+    let activeWorkers = 0;
     
     // Fork workers
     for (let i = 0; i < numCPUs; i++) {
-      const worker = cluster.fork();
+      // Pass silent flag to worker to prevent console output duplication
+      const worker = cluster.fork({ WORKER_SILENT: '1' });
+      activeWorkers++;
       
       // Send bypass options to worker
-      worker.send({ type: 'config', bypassOptions, proxyList });
+      worker.send({ 
+        type: 'config', 
+        bypassOptions, 
+        proxyList, 
+        settings: {
+          connections: options.connections,
+          rate: options.rate,
+          duration: options.duration,
+          timeout: options.timeout,
+          delay: options.delay,
+          quiet: true // Force worker to be quiet
+        }
+      });
       
       // Handle messages from workers
       worker.on('message', (msg) => {
@@ -209,6 +401,7 @@ For security testing and performance evaluation purposes only
           }
         } else if (msg.type === 'completed') {
           completedWorkers++;
+          activeWorkers--;
           
           // All workers completed, show final stats
           if (completedWorkers === numCPUs) {
@@ -231,6 +424,27 @@ For security testing and performance evaluation purposes only
             }
             
             process.exit(0);
+          }
+        }
+      });
+      
+      // Handle worker crashes
+      worker.on('exit', (code, signal) => {
+        activeWorkers--;
+        if (signal) {
+          // Worker was killed
+          if (options.verbose && !options.quiet) {
+            console.log(`[!] Worker was killed by signal: ${signal}`);
+          }
+        } else if (code !== 0) {
+          // Worker crashed
+          if (options.verbose && !options.quiet) {
+            console.log(`[!] Worker exited with error code: ${code}`);
+          }
+          
+          // Respawn worker if test is still running
+          if (Date.now() - stats.startTime < options.duration * 1000) {
+            spawnWorker();
           }
         }
       });
@@ -264,11 +478,11 @@ For security testing and performance evaluation purposes only
     console.log(`Failed requests: ${stats.failed}`);
     console.log(`Requests/second: ${rps}`);
     
-    // Calculate bandwidth
-    const totalMBReceived = stats.bytesReceived / (1024 * 1024);
-    const totalMBSent = stats.bytesSent / (1024 * 1024);
-    const mbpsReceived = totalMBReceived * 8 / totalTime;
-    const mbpsSent = totalMBSent * 8 / totalTime;
+    // Calculate bandwidth with proper byte count
+    const totalMBReceived = Math.max(0, stats.bytesReceived) / (1024 * 1024);
+    const totalMBSent = Math.max(0, stats.bytesSent) / (1024 * 1024);
+    const mbpsReceived = (totalMBReceived * 8) / totalTime;
+    const mbpsSent = (totalMBSent * 8) / totalTime;
     
     console.log(`Bandwidth: ${mbpsReceived.toFixed(2)} Mbps received, ${mbpsSent.toFixed(2)} Mbps sent`);
     console.log(`Data transferred: ${totalMBReceived.toFixed(2)} MB received, ${totalMBSent.toFixed(2)} MB sent`);
@@ -304,7 +518,20 @@ For security testing and performance evaluation purposes only
   });
   
 } else {
-  // Worker process
+  // For worker process
+  
+  // Check if worker should be silent
+  const silent = process.env.WORKER_SILENT === '1' || true;
+  
+  // Completely silence the worker process if needed
+  if (silent) {
+    // Override console methods to suppress output
+    console.log = () => {};
+    console.error = () => {};
+    console.warn = () => {};
+    console.info = () => {};
+  }
+  
   const workerStats = {
     requests: 0,
     successful: 0,
@@ -313,6 +540,23 @@ For security testing and performance evaluation purposes only
     bytesReceived: 0,
     bytesSent: 0
   };
+  
+  // Handle worker process errors
+  process.on('uncaughtException', (err) => {
+    // Only log errors in verbose mode and when not silent
+    if (options.verbose && !silent) {
+      console.error(`[!] Worker uncaught exception: ${err.message}`);
+    }
+    
+    // Try to send stats before exiting
+    try {
+      process.send({ type: 'stats', data: workerStats });
+    } catch (e) {
+      // Ignore send errors
+    }
+    
+    process.exit(1);
+  });
   
   // Proxy rotation index
   let proxyIndex = 0;
@@ -323,7 +567,12 @@ For security testing and performance evaluation purposes only
   process.on('message', (msg) => {
     if (msg.type === 'config') {
       bypassOptions = msg.bypassOptions;
-      proxyList = msg.proxyList;
+      proxyList = msg.proxyList || [];
+      
+      // Apply any settings from master
+      if (msg.settings) {
+        Object.assign(options, msg.settings);
+      }
     } else if (msg.type === 'stop') {
       clearInterval(reportInterval);
       clearInterval(requestInterval);
@@ -340,9 +589,22 @@ For security testing and performance evaluation purposes only
   const getNextProxy = () => {
     if (proxyList.length === 0) return null;
     
-    const proxy = proxyList[proxyIndex];
-    proxyIndex = (proxyIndex + 1) % proxyList.length;
-    return proxy;
+    // Try up to 3 proxies in case some are invalid
+    for (let i = 0; i < 3; i++) {
+      const proxy = proxyList[proxyIndex];
+      proxyIndex = (proxyIndex + 1) % proxyList.length;
+      
+      // Basic validation of proxy format
+      if (proxy && proxy.includes(':')) {
+        const [host, port] = proxy.split(':');
+        if (host && port && !isNaN(parseInt(port, 10))) {
+          return proxy;
+        }
+      }
+    }
+    
+    // If we couldn't find a valid proxy after 3 tries, return null
+    return null;
   };
   
   // Setup request interval
@@ -355,201 +617,31 @@ For security testing and performance evaluation purposes only
       return;
     }
     
+    // Ensure delay is a valid number
+    const delay = options.delay && !isNaN(options.delay) ? options.delay : 10;
+    
     // Perform requests at specified rate
     requestInterval = setInterval(() => {
-      const requestsPerInterval = options.delay ? 
+      const requestsPerInterval = delay ? 
         1 : Math.max(1, Math.floor(options.rate / (1000 / 10)));
       
       for (let i = 0; i < requestsPerInterval; i++) {
         performRequest();
       }
-    }, options.delay || 10);
+    }, delay);
   };
   
-  startRequestInterval();
-  
-  // Perform a single request
-  function performRequest() {
-    try {
-      // Apply bypass techniques
-      const requestOptions = createRequestOptions();
-      
-      // Track sent bytes
-      let bytesSent = 0;
-      
-      // Add size of headers
-      for (const header in requestOptions.headers) {
-        bytesSent += header.length + requestOptions.headers[header].length + 4; // 4 for ': ' and '\r\n'
-      }
-      
-      // Add payload size if applicable
-      if (['POST', 'PUT', 'PATCH'].includes(options.method.toUpperCase()) && payloadData) {
-        bytesSent += Buffer.byteLength(payloadData);
-      }
-      
-      // Start request
-      const req = targetProtocol.request(requestOptions, (res) => {
-        const statusCode = res.statusCode.toString();
-        workerStats.statusCodes[statusCode] = (workerStats.statusCodes[statusCode] || 0) + 1;
-        
-        // Handle redirects if enabled
-        if (options.followRedirects && 
-            [301, 302, 303, 307, 308].includes(res.statusCode) && 
-            res.headers.location) {
-          
-          handleRedirect(res, 1);
-          return;
-        }
-        
-        // Track response size
-        let responseSize = 0;
-        
-        // Calculate headers size
-        for (const header in res.headers) {
-          responseSize += header.length + (res.headers[header]?.length || 0) + 4;
-        }
-        
-        if (res.statusCode >= 200 && res.statusCode < 400) {
-          workerStats.successful++;
-        } else {
-          workerStats.failed++;
-        }
-        
-        // Consume response data
-        res.on('data', (chunk) => {
-          responseSize += chunk.length;
-        });
-        
-        res.on('end', () => {
-          workerStats.bytesReceived += responseSize;
-        });
-      });
-      
-      req.on('error', (error) => {
-        workerStats.failed++;
-        console.error('Request error:', error.message);
-      });
-      
-      // Set request timeout
-      req.setTimeout(options.timeout, () => {
-        req.destroy(new Error('Request timeout'));
-      });
-      
-      // Send payload if applicable
-      if (['POST', 'PUT', 'PATCH'].includes(options.method.toUpperCase()) && payloadData) {
-        req.write(payloadData);
-      }
-      
-      req.end();
-      workerStats.requests++;
-      workerStats.bytesSent += bytesSent;
-    } catch (error) {
-      workerStats.failed++;
-      console.error('Error in performRequest:', error.message);
-    }
-  }
-  
-  // Handle redirect
-  function handleRedirect(res, redirectCount) {
-    // Check max redirects
-    if (redirectCount > options.maxRedirects) {
-      workerStats.failed++;
-      return;
-    }
-    
-    // Get redirect location
-    let redirectUrl;
-    try {
-      redirectUrl = new url.URL(res.headers.location, options.target);
-    } catch (error) {
-      workerStats.failed++;
-      return;
-    }
-    
-    // Create new request options
-    const redirectOptions = {
-      hostname: redirectUrl.hostname,
-      port: redirectUrl.port || (redirectUrl.protocol === 'https:' ? 443 : 80),
-      path: redirectUrl.pathname + redirectUrl.search,
-      method: 'GET', // Redirects typically use GET
-      headers: {
-        'User-Agent': userAgents.getRandomUserAgent(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': options.keepAlive ? 'keep-alive' : 'close',
-        'Referer': options.target
-      }
-    };
-    
-    // Apply bypass techniques to the redirect request
-    bypassOptions.forEach(technique => {
-      if (bypassTechniques[technique]) {
-        bypassTechniques[technique](redirectOptions);
-      }
-    });
-    
-    // Apply proxy if available
-    if (proxyList.length > 0) {
-      const proxy = getNextProxy();
-      if (proxy) {
-        const [host, port] = proxy.split(':');
-        redirectOptions.agent = new (redirectUrl.protocol === 'https:' ? https : http).Agent({
-          host: host,
-          port: parseInt(port),
-          path: redirectUrl.href
-        });
-      }
-    }
-    
-    // Make the redirect request
-    const protocol = redirectUrl.protocol === 'https:' ? https : http;
-    const redirectReq = protocol.request(redirectOptions, (redirectRes) => {
-      const statusCode = redirectRes.statusCode.toString();
-      workerStats.statusCodes[statusCode] = (workerStats.statusCodes[statusCode] || 0) + 1;
-      
-      // Handle nested redirects
-      if (options.followRedirects && 
-          [301, 302, 303, 307, 308].includes(redirectRes.statusCode) && 
-          redirectRes.headers.location) {
-        
-        handleRedirect(redirectRes, redirectCount + 1);
-        return;
-      }
-      
-      let responseSize = 0;
-      
-      // Calculate headers size
-      for (const header in redirectRes.headers) {
-        responseSize += header.length + (redirectRes.headers[header]?.length || 0) + 4;
-      }
-      
-      if (redirectRes.statusCode >= 200 && redirectRes.statusCode < 400) {
-        workerStats.successful++;
-      } else {
-        workerStats.failed++;
-      }
-      
-      // Consume response data
-      redirectRes.on('data', (chunk) => {
-        responseSize += chunk.length;
-      });
-      
-      redirectRes.on('end', () => {
-        workerStats.bytesReceived += responseSize;
-      });
-    });
-    
-    redirectReq.on('error', (error) => {
-      workerStats.failed++;
-    });
-    
-    redirectReq.end();
+  // Only display warnings in the master process
+  if (!options.suppressWarnings) {
+    startRequestInterval();
+  } else {
+    // For worker processes, start silently
+    startRequestInterval();
   }
   
   // Create request options with bypass techniques
-  function createRequestOptions() {
-    const parsedUrl = new url.URL(options.target);
+  function createRequestOptions(targetUrl) {
+    const parsedUrl = new url.URL(targetUrl || options.target);
     let path = parsedUrl.pathname + parsedUrl.search;
     
     // Apply randomized path if enabled
@@ -558,14 +650,17 @@ For security testing and performance evaluation purposes only
       path = path + (path.includes('?') ? '&' : '?') + randomPath + '=' + Date.now();
     }
     
+    // Determine if we're using HTTP/1.1 or HTTP/2
+    const isHttp2 = options.protocol === 'http2' && parsedUrl.protocol === 'https:';
+    
     // Base request options with default headers
     const requestOptions = {
       hostname: parsedUrl.hostname,
-      port: targetPort,
+      port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
       path: path,
       method: options.method,
       headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'User-Agent': userAgents.getRandomUserAgent(),
         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.5',
         'Accept-Encoding': 'gzip, deflate, br',
@@ -575,24 +670,10 @@ For security testing and performance evaluation purposes only
         'Pragma': 'no-cache',
         ...customHeaders
       },
-      timeout: options.timeout
+      timeout: options.timeout,
+      // Add SSL/TLS options
+      rejectUnauthorized: false
     };
-    
-    // Apply proxy if provided directly or from list
-    let proxyToUse = options.proxy;
-    
-    if (!proxyToUse && proxyList.length > 0) {
-      proxyToUse = getNextProxy();
-    }
-    
-    if (proxyToUse) {
-      const [host, port] = proxyToUse.split(':');
-      requestOptions.agent = new (targetProtocol.Agent)({
-        host: host,
-        port: parseInt(port),
-        path: options.target
-      });
-    }
     
     // Apply selected bypass techniques
     bypassOptions.forEach(technique => {
@@ -600,11 +681,162 @@ For security testing and performance evaluation purposes only
         try {
           bypassTechniques[technique](requestOptions);
         } catch (error) {
-          console.error(`Error applying bypass technique ${technique}:`, error.message);
+          if (options.verbose) {
+            console.error(`Error applying bypass technique ${technique}: ${error.message}`);
+          }
         }
       }
     });
     
+    // Apply proxy if available
+    const proxy = options.proxy || getNextProxy();
+    if (proxy) {
+      const [host, port] = proxy.split(':');
+      requestOptions.agent = new https.Agent({
+        host,
+        port: parseInt(port, 10),
+        rejectUnauthorized: false
+      });
+    }
+    
     return requestOptions;
   }
-} 
+  
+  // Perform HTTP request with bypass techniques
+  function performRequest() {
+    const requestStart = performance.now();
+    const requestOptions = createRequestOptions();
+    
+    try {
+      if (options.protocol === 'http2') {
+        // HTTP/2 request implementation
+        const client = http2.connect(`https://${requestOptions.hostname}:${requestOptions.port}`, {
+          rejectUnauthorized: false,
+          settings: {
+            enablePush: false,
+            initialWindowSize: 1024 * 1024, // 1MB
+            maxSessionMemory: 64 * 1024 * 1024 // 64MB
+          }
+        });
+        
+        client.on('error', (err) => {
+          workerStats.failed++;
+          workerStats.requests++;
+          client.close();
+        });
+        
+        const headers = {
+          ':method': requestOptions.method,
+          ':path': requestOptions.path,
+          ':scheme': 'https',
+          ':authority': requestOptions.hostname
+        };
+        
+        // Add all HTTP/2 compatible headers
+        for (const [key, value] of Object.entries(requestOptions.headers)) {
+          // Skip HTTP/1.x specific headers
+          if (!['host', 'connection', 'keep-alive', 'transfer-encoding', 'upgrade'].includes(key.toLowerCase())) {
+            headers[key.toLowerCase()] = value;
+          }
+        }
+        
+        const req = client.request(headers);
+        
+        let responseData = Buffer.alloc(0);
+        let statusCode = null;
+        
+        req.on('response', (headers) => {
+          statusCode = headers[':status'];
+          workerStats.statusCodes[statusCode] = (workerStats.statusCodes[statusCode] || 0) + 1;
+        });
+        
+        req.on('data', (chunk) => {
+          responseData = Buffer.concat([responseData, chunk]);
+          workerStats.bytesReceived += chunk.length;
+        });
+        
+        req.on('end', () => {
+          const requestEnd = performance.now();
+          
+          if (statusCode) {
+            if (statusCode >= 200 && statusCode < 400) {
+              workerStats.successful++;
+            } else {
+              workerStats.failed++;
+            }
+          } else {
+            workerStats.failed++;
+          }
+          
+          workerStats.requests++;
+          client.close();
+        });
+        
+        req.on('error', () => {
+          workerStats.failed++;
+          workerStats.requests++;
+          client.close();
+        });
+        
+        // Send payload if applicable
+        if (['POST', 'PUT', 'PATCH'].includes(requestOptions.method) && payloadData) {
+          const buffer = Buffer.from(payloadData);
+          workerStats.bytesSent += buffer.length;
+          req.write(buffer);
+        }
+        
+        req.end();
+      } else {
+        // HTTP/1.1 request
+        const protocol = new URL(options.target).protocol === 'https:' ? https : http;
+        
+        const request = protocol.request(requestOptions, (response) => {
+          const { statusCode } = response;
+          workerStats.statusCodes[statusCode] = (workerStats.statusCodes[statusCode] || 0) + 1;
+          
+          let responseSize = 0;
+          
+          response.on('data', (chunk) => {
+            responseSize += chunk.length;
+            workerStats.bytesReceived += chunk.length;
+          });
+          
+          response.on('end', () => {
+            const requestEnd = performance.now();
+            
+            if (statusCode >= 200 && statusCode < 400) {
+              workerStats.successful++;
+            } else {
+              workerStats.failed++;
+            }
+            
+            workerStats.requests++;
+          });
+        });
+        
+        request.on('error', () => {
+          workerStats.failed++;
+          workerStats.requests++;
+        });
+        
+        request.on('timeout', () => {
+          request.destroy();
+          workerStats.failed++;
+          workerStats.requests++;
+        });
+        
+        // Send payload if applicable
+        if (['POST', 'PUT', 'PATCH'].includes(options.method) && payloadData) {
+          const buffer = Buffer.from(payloadData);
+          workerStats.bytesSent += buffer.length;
+          request.write(buffer);
+        }
+        
+        request.end();
+      }
+    } catch (error) {
+      workerStats.failed++;
+      workerStats.requests++;
+    }
+  }
+}
