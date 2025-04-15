@@ -1,0 +1,29 @@
+{
+  "name": "advanced-load-tester",
+  "version": "1.0.0",
+  "description": "Advanced website load testing tool with security bypass features",
+  "main": "loadtester.js",
+  "bin": {
+    "loadtester": "./loadtester.js"
+  },
+  "scripts": {
+    "start": "node loadtester.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [
+    "load-testing",
+    "performance",
+    "security",
+    "testing",
+    "web"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "commander": "^11.1.0",
+    "crypto": "^1.0.1"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  }
+} 
