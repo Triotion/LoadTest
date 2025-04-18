@@ -41,7 +41,7 @@ This tool is provided for **EDUCATIONAL AND LEGITIMATE SECURITY TESTING PURPOSES
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/advanced-load-tester.git
+git clone https://github.com/Triotion/LoadTest.git
 cd advanced-load-tester
 
 # Install dependencies
@@ -57,7 +57,7 @@ npm install -g .
 ## Usage
 
 ```bash
-node loadtester.js -t https://your-target-website.com [options]
+node loadtester.js -t https://example.com [options]
 ```
 
 ### Command Line Options
