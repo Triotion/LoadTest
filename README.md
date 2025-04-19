@@ -16,7 +16,7 @@ A powerful and feature-rich load testing tool designed for security testing and 
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/load-tester.git
+git clone https://github.com/Triotion/load-tester.git
 
 # Install dependencies
 cd load-tester
@@ -26,7 +26,7 @@ npm install
 ## Usage
 
 ```bash
-node loadtester.js -t https://your-target-url.com [options]
+node loadtester.js -t https://example.com [options]
 ```
 
 ### Basic Options
