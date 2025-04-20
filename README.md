@@ -16,7 +16,7 @@ A powerful and feature-rich load testing tool designed for security testing and 
 
 ```bash
 # Clone the repository
-git clone https://github.com/Triotion/load-tester.git
+git clone https://github.com/Triotion/LoadTest.git
 
 # Install dependencies
 cd load-tester
