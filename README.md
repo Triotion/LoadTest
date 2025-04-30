@@ -19,7 +19,7 @@ A powerful and feature-rich load testing tool designed for security testing and 
 git clone https://github.com/Triotion/LoadTest.git
 
 # Install dependencies
-cd load-tester
+cd LoadTest
 npm install
 ```
 
