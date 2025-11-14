@@ -108,7 +108,7 @@ If you find this tool valuable, consider donating to support ongoing development
 
 ## Author
 
-Developed By Triotion - [Telegram Channel](https://t.me/+9aG_4k6j7xNkYzY1(group))
+Developed By Triotion - [Telegram](https://t.me/+9aG_4k6j7xNkYzY1)
 
 ## License
 
