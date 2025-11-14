@@ -38,6 +38,18 @@ const shuffleArray = (array) => {
   return array;
 };
 
+const generateJA3Fingerprint = () => {
+  // Generate realistic JA3 fingerprints
+  const ja3Samples = [
+    '771,4865-4866-4867-49195-49199-49196-49200-52393-52392-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-21,29-23-24,0',
+    '771,4865-4867-4866-49195-49199-52393-52392-49196-49200-49162-49161-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513-21,29-23-24-25-256-257,0',
+    '771,4865-4867-4866-49195-49199-52393-52392-49196-49200-49162-49161-49171-49172-156-157-47-53,0-23-65281-10-11-35-16-5-13-18-51-45-43-27-17513-21,29-23-24-25-256-257,0',
+    '771,4865-4866-4867-49195-49196-49200-49199-52393-52392-49171-49172-49161-49162-156-157-47-53,0-23-65281-10-11-13-35-16-5-51-18-45-43-27-21,29-23-24-25,0'
+  ];
+  
+  return ja3Samples[Math.floor(Math.random() * ja3Samples.length)];
+};
+
 // Collection of bypass techniques
 const bypassTechniques = {
   /**
@@ -327,35 +339,40 @@ Object.assign(bypassTechniques, {
    * Cloudflare UAM (Under Attack Mode) bypass
    */
   cloudflareUAMBypass: (requestOptions) => {
-    // Generate a realistic cf_clearance token
-    const nowSecs = Math.floor(Date.now() / 1000);
-    const clearance = `${randomString(32)}-${nowSecs - randomInRange(100, 900)}-${randomInRange(0, 3)}-${randomInRange(0, 100)}`;
+    // Add Cloudflare-specific headers
+    requestOptions.headers['CF-IPCountry'] = ['US', 'GB', 'CA', 'AU', 'DE', 'FR'][Math.floor(Math.random() * 6)];
+    requestOptions.headers['CF-Visitor'] = JSON.stringify({ "scheme": "https" });
+    requestOptions.headers['CF-RAY'] = `${randomString(16).toLowerCase()}-${['EWR', 'DFW', 'LAX', 'LHR', 'FRA'][Math.floor(Math.random() * 5)]}`;
+    requestOptions.headers['CF-Connecting-IP'] = randomIP();
     
-    // Generate realistic challenge values
-    const challengeValues = {
-      jsch: randomString(20),
-      jschl_vc: randomString(32),
-      jschl_answer: (Math.random() * 10 + 10).toFixed(10),
-      pass: randomString(60)
+    // Add browser canvas fingerprint emulation via header
+    requestOptions.headers['X-Canvas-Fingerprint'] = crypto.randomBytes(16).toString('hex');
+    
+    // Add WebGL fingerprint emulation
+    requestOptions.headers['X-WebGL-Fingerprint'] = crypto.randomBytes(22).toString('hex');
+    
+    // Mimic browser JS engine characteristics
+    requestOptions.headers['X-JS-Engine'] = ['V8', 'SpiderMonkey', 'JavaScriptCore'][Math.floor(Math.random() * 3)];
+    
+    // Add mouse movement telemetry simulation
+    const mouseData = {
+      moves: Math.floor(Math.random() * 100) + 50,
+      clicks: Math.floor(Math.random() * 8) + 1,
+      elements: ['nav', 'button', 'div.content', 'a.link', 'input'][Math.floor(Math.random() * 5)]
     };
+    requestOptions.headers['X-User-Interaction'] = JSON.stringify(mouseData);
     
-    // Apply to headers
-    let cookieHeader = requestOptions.headers['Cookie'] || '';
-    cookieHeader += (cookieHeader ? '; ' : '') + `cf_clearance=${clearance}`;
-    requestOptions.headers['Cookie'] = cookieHeader;
+    // Emulate browser navigation timing
+    const navTiming = {
+      fetchStart: Date.now() - Math.floor(Math.random() * 1000) - 2000,
+      domLoading: Date.now() - Math.floor(Math.random() * 800) - 1000,
+      domInteractive: Date.now() - Math.floor(Math.random() * 500) - 500,
+      domComplete: Date.now() - Math.floor(Math.random() * 300)
+    };
+    requestOptions.headers['X-Nav-Timing'] = JSON.stringify(navTiming);
     
-    // Add browser verification tokens
-    requestOptions.headers['CF-Challenge'] = challengeValues.jschl_vc;
-    requestOptions.headers['CF-Worker'] = '1';
-    
-    // Add cf_chl parameters to URL
-    const cfParams = `cf_chl_jschl_tk__=${encodeURIComponent(challengeValues.jsch)}&jschl_vc=${encodeURIComponent(challengeValues.jschl_vc)}&jschl_answer=${encodeURIComponent(challengeValues.jschl_answer)}&pass=${encodeURIComponent(challengeValues.pass)}`;
-    
-    if (requestOptions.path.includes('?')) {
-      requestOptions.path += '&' + cfParams;
-    } else {
-      requestOptions.path += '?' + cfParams;
-    }
+    // TLS fingerprinting resistance
+    requestOptions.headers['X-TLS-Fingerprint'] = generateJA3Fingerprint();
   },
   
   /**

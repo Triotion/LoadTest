@@ -24,11 +24,26 @@ const protectionSystems = {
     },
     bypassTechniques: [
       'cloudflareBypass', 
+      'cloudflareUAMBypass',
+      'cloudflareTurnstileBypass',
+      'cloudflareManagedChallengeBypass',
+      'advancedCloudflareBypass',
       'browserCapabilities', 
       'clientHints', 
       'tlsFingerprintScrambling',
       'securityTokenEmulation',
-      'navigationBehavior'
+      'navigationBehavior',
+      'antiMeasurementEvasion',
+      'behavioralBiometricsEvasion',
+      'wafPayloadPadding',
+      'protocolHeaderAbuse',
+      'randomizeHeaderOrder',
+      'randomizeHeaderCase',
+      'randomForwardedIP',
+      'believableReferrer',
+      'cacheBypass',
+      'contentTypeSpecificBehavior',
+      'http2Bypass'
     ]
   },
   'Cloudflare UAM': {
@@ -40,13 +55,18 @@ const protectionSystems = {
       /cf_chl_/i
     ],
     bypassTechniques: [
-      'cloudflareBypass',
+      'cloudflareUAMBypass',
+      'advancedCloudflareBypass',
       'securityTokenEmulation',
       'clientHints',
-      'combinedTechniques',
       'browserCapabilities',
       'tlsFingerprintScrambling',
-      'antiMeasurementEvasion'
+      'antiMeasurementEvasion',
+      'behavioralBiometricsEvasion',
+      'wafPayloadPadding',
+      'protocolHeaderAbuse',
+      'randomizeHeaderOrder',
+      'randomForwardedIP'
     ]
   },
   'DDoSGuard': {
@@ -57,14 +77,21 @@ const protectionSystems = {
       'server': /ddos-guard/i
     },
     bypassTechniques: [
-      'wafEvasion',
+      'neuralNetworkWafBypass',
       'browserCapabilities', 
       'clientHints',
       'securityTokenEmulation',
       'navigationBehavior',
       'antiMeasurementEvasion',
       'contentTypeSpecificBehavior',
-      'cacheBypass'
+      'cacheBypass',
+      'randomizeHeaderOrder',
+      'randomizeHeaderCase',
+      'randomForwardedIP',
+      'believableReferrer',
+      'behavioralBiometricsEvasion',
+      'wafPayloadPadding',
+      'protocolHeaderAbuse'
     ]
   },
   'Akamai': {
@@ -74,13 +101,18 @@ const protectionSystems = {
       'server': /akamai/i
     },
     bypassTechniques: [
+      'akamaiBotManagerBypass',
+      'neuralNetworkWafBypass',
       'securityTokenEmulation',
       'browserCapabilities',
       'clientHints',
       'navigationBehavior',
-      'rateLimitBypass',
-      'combinedTechniques',
-      'contentTypeSpecificBehavior'
+      'contentTypeSpecificBehavior',
+      'tlsFingerprintScrambling',
+      'antiMeasurementEvasion',
+      'behavioralBiometricsEvasion',
+      'wafPayloadPadding',
+      'protocolHeaderAbuse'
     ]
   },
   'Imperva Incapsula': {
@@ -88,14 +120,18 @@ const protectionSystems = {
     cookies: ['incap_ses', 'visid_incap'],
     cookiePatterns: [/incap_ses/, /visid_incap/],
     bypassTechniques: [
+      'impervaAdvancedBypass',
+      'neuralNetworkWafBypass',
       'securityTokenEmulation',
       'browserCapabilities',
       'clientHints',
       'antiMeasurementEvasion',
       'navigationBehavior',
       'contentTypeSpecificBehavior',
-      'combinedTechniques',
-      'wafEvasion'
+      'tlsFingerprintScrambling',
+      'behavioralBiometricsEvasion',
+      'wafPayloadPadding',
+      'protocolHeaderAbuse'
     ]
   },
   'Vercel': {
@@ -105,10 +141,13 @@ const protectionSystems = {
     },
     bypassTechniques: [
       'cacheBypass',
-      'rateLimitBypass',
       'randomForwardedIP',
       'randomizeHeaderOrder',
-      'browserCapabilities'
+      'browserCapabilities',
+      'clientHints',
+      'believableReferrer',
+      'wafPayloadPadding',
+      'protocolHeaderAbuse'
     ]
   },
   'Sucuri': {
@@ -117,33 +156,50 @@ const protectionSystems = {
       'server': /sucuri/i
     },
     bypassTechniques: [
-      'wafEvasion',
-      'rateLimitBypass',
+      'neuralNetworkWafBypass',
       'browserCapabilities',
       'clientHints',
       'navigationBehavior',
-      'tlsFingerprintScrambling'
+      'tlsFingerprintScrambling',
+      'randomizeHeaderOrder',
+      'randomizeHeaderCase',
+      'randomForwardedIP',
+      'believableReferrer',
+      'cacheBypass',
+      'antiMeasurementEvasion',
+      'contentTypeSpecificBehavior',
+      'behavioralBiometricsEvasion',
+      'wafPayloadPadding',
+      'protocolHeaderAbuse'
     ]
   },
   'ModSecurity': {
     bodyPatterns: [/mod_security/, /blocked by mod_security/i],
     bypassTechniques: [
-      'wafEvasion',
       'randomizeHeaderCase',
       'randomizeHeaderOrder',
       'antiMeasurementEvasion',
-      'contentTypeSpecificBehavior'
+      'contentTypeSpecificBehavior',
+      'wafPayloadPadding',
+      'protocolHeaderAbuse',
+      'randomForwardedIP',
+      'believableReferrer',
+      'cacheBypass'
     ]
   },
   'AWS WAF': {
     headers: ['x-amzn-trace-id', 'x-amz-cf-id', 'x-amz-cf-pop'],
     bypassTechniques: [
-      'wafEvasion',
+      'awsWafShieldBypass',
+      'neuralNetworkWafBypass',
       'browserCapabilities',
       'clientHints',
       'randomForwardedIP',
       'contentTypeSpecificBehavior',
-      'tlsFingerprintScrambling'
+      'tlsFingerprintScrambling',
+      'behavioralBiometricsEvasion',
+      'wafPayloadPadding',
+      'protocolHeaderAbuse'
     ]
   }
 };

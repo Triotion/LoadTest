@@ -21,7 +21,7 @@
   "license": "MIT",
   "dependencies": {
     "commander": "^11.1.0",
-    "crypto": "^1.0.1",
+    "hpack": "*",
     "tunnel": "^0.0.6"
   },
   "engines": {
